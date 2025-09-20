@@ -30,7 +30,7 @@ class BybitFundingBot:
         # Конфигурация
         self.SYMBOLS = ["ETHUSDT", "DOGEUSDT"]  # Поддерживаемые пары
         self.STABLE = "USDT"
-        self.POSITION_SIZE = 5  # USDT на каждую позицию
+        self.POSITION_SIZE = 5.0  # USDT на каждую позицию
         self.CHECK_INTERVAL = 1800  # 30 минут
         self.FUNDING_RATE_THRESHOLD = 0.02  # 0.02% минимальный funding rate
         self.MAX_POSITIONS_PER_SYMBOL = 1  # Максимум позиций на пару
