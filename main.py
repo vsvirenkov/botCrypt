@@ -187,40 +187,59 @@ class BybitFundingBot:
         for account_type in account_types:
             try:
                 logger.debug(f"🔍 Пробуем accountType={account_type} для {coin}")
-                balance = self.session.get_wallet_balance(accountType=account_type, coin=coin)
 
-                if balance.get("retCode") == 0:
-                    # Проверяем структуру ответа
-                    result_list = balance["result"]["list"]
-                    if not result_list:
-                        logger.debug(f"ℹ️  {account_type}: Список пуст")
-                        continue
+                # Сначала попробуем без параметра coin для получения всех монет
+                if coin == "USDT":
+                    balance = self.session.get_wallet_balance(accountType=account_type)
+                else:
+                    balance = self.session.get_wallet_balance(accountType=account_type, coin=coin)
 
-                    # Для разных типов аккаунта структура может отличаться
-                    if account_type == "SPOT":
-                        # Spot аккаунт имеет другую структуру
-                        for account in result_list:
-                            for c in account.get("coin", []):
-                                if c["coin"] == coin:
-                                    balance_value = c.get("free", c.get("walletBalance", "0"))
+                logger.debug(f"🔍 {account_type} ответ API: {json.dumps(balance, indent=2)[:500]}...")
+
+                if balance.get("retCode") != 0:
+                    logger.debug(f"ℹ️  {account_type}: API ошибка - {balance.get('retMsg')}")
+                    continue
+
+                # Проверяем структуру ответа
+                result_list = balance["result"]["list"]
+                if not result_list:
+                    logger.debug(f"ℹ️  {account_type}: Список пуст")
+                    continue
+
+                # Для разных типов аккаунта структура может отличаться
+                if account_type == "SPOT":
+                    # Spot аккаунт имеет другую структуру
+                    for account in result_list:
+                        for c in account.get("coin", []):
+                            if c["coin"] == coin:
+                                balance_value = c.get("free", c.get("walletBalance", "0"))
+                                if balance_value:
                                     balance_amount = float(balance_value)
                                     logger.info(f"💰 {account_type} баланс {coin}: {balance_amount:.2f}")
                                     self.balance_cache[cache_key] = balance_amount
                                     return balance_amount
-                    else:
-                        # Unified/Fund аккаунты
-                        coin_list = result_list[0]["coin"]
+                else:
+                    # Unified/Fund аккаунты
+                    for account in result_list:
+                        coin_list = account.get("coin", [])
                         for c in coin_list:
                             if c["coin"] == coin:
-                                balance_value = c.get("walletBalance", c.get("availableToWithdraw", c.get("free", "0")))
-                                balance_amount = float(balance_value)
-                                logger.info(f"💰 {account_type} баланс {coin}: {balance_amount:.2f}")
-                                self.balance_cache[cache_key] = balance_amount
-                                return balance_amount
+                                # Пробуем разные поля в зависимости от типа аккаунта
+                                balance_value = (
+                                    c.get("walletBalance") or
+                                    c.get("availableToWithdraw") or
+                                    c.get("free") or
+                                    c.get("equity") or
+                                    c.get("totalEquity") or
+                                    "0"
+                                )
+                                if balance_value:
+                                    balance_amount = float(balance_value)
+                                    logger.info(f"💰 {account_type} баланс {coin}: {balance_amount:.2f}")
+                                    self.balance_cache[cache_key] = balance_amount
+                                    return balance_amount
 
-                        logger.debug(f"ℹ️  {account_type}: {coin} не найден в списке монет")
-                else:
-                    logger.debug(f"ℹ️  {account_type}: API ошибка - {balance.get('retMsg')}")
+                logger.debug(f"ℹ️  {account_type}: {coin} не найден в списке монет")
 
             except Exception as e:
                 logger.debug(f"ℹ️  {account_type}: Исключение - {e}")
@@ -478,8 +497,9 @@ class BybitFundingBot:
             # Проверка баланса
             available = self.get_available_balance(self.STABLE)
             if available is None or available < self.POSITION_SIZE * 2:
-                logger.warning(f"⚠️  {symbol}: Недостаточно баланса ({available:.2f} < {self.POSITION_SIZE * 2:.2f})")
-                await self.send_telegram_message(f"⚠️  Низкий баланс для {symbol}: {available:.2f} USDT")
+                balance_str = f"{available:.2f}" if available is not None else "N/A"
+                logger.warning(f"⚠️  {symbol}: Недостаточно баланса ({balance_str} < {self.POSITION_SIZE * 2:.2f})")
+                await self.send_telegram_message(f"⚠️  Низкий баланс для {symbol}: {balance_str} USDT")
                 return False
 
             # Расчет количества
@@ -676,10 +696,33 @@ class BybitFundingBot:
         """Запуск бота"""
         try:
             # Начальная проверка
+            logger.info("🔍 Проверка начального баланса...")
             available = self.get_available_balance(self.STABLE)
+
+            # Добавляем отладочную информацию
+            if available is None:
+                logger.error("❌ Не удалось получить баланс - возвращен None")
+                # Попробуем получить полную информацию о балансе
+                try:
+                    logger.info("🔍 Отладка: запрос баланса UNIFIED без coin...")
+                    debug_balance = self.session.get_wallet_balance(accountType="UNIFIED")
+                    logger.info(f"🔍 Полная информация о балансе UNIFIED: {json.dumps(debug_balance, indent=2)[:1000]}...")
+
+                    logger.info("🔍 Отладка: запрос баланса SPOT без coin...")
+                    debug_balance_spot = self.session.get_wallet_balance(accountType="SPOT")
+                    logger.info(f"🔍 Полная информация о балансе SPOT: {json.dumps(debug_balance_spot, indent=2)[:1000]}...")
+
+                except Exception as debug_e:
+                    logger.error(f"❌ Ошибка отладки баланса: {debug_e}")
+                    logger.error(f"🔍 Ответ API: {debug_e}")
+            else:
+                logger.info(f"💰 Начальный баланс: {available:.2f} {self.STABLE}")
+
+            # ИСПРАВЛЕНО: правильное форматирование строки
+            balance_display = f"{available:.2f}" if available is not None else "N/A"
             message_parts = [
                 f"🤖 <b>Bybit Funding Bot v2.0</b> запущен!",
-                f"💰 <b>Баланс</b>: {available:.2f if available else 'N/A'} {self.STABLE}",
+                f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
                 f"📈 <b>Пары</b>: {', '.join(self.SYMBOLS)}",
                 f"💼 <b>Размер</b>: {self.POSITION_SIZE} USDT",
                 f"📊 <b>Порог</b>: {self.FUNDING_RATE_THRESHOLD}%",
@@ -692,9 +735,11 @@ class BybitFundingBot:
 
             if available is not None and available > 0:
                 logger.info(f"✅ Начальный баланс: {available:.2f} {self.STABLE}")
-            else:
+            elif available is None:
                 logger.warning("⚠️  Не удалось получить начальный баланс")
-                await self.send_telegram_message("⚠️  Не удалось получить баланс. Проверьте API ключи.")
+                await self.send_telegram_message("⚠️  Не удалось получить баланс. Проверьте API ключи и тип аккаунта.")
+            else:
+                logger.warning(f"⚠️  Начальный баланс равен 0: {available:.2f} {self.STABLE}")
 
             # Запуск основного цикла
             await self.main_loop()
