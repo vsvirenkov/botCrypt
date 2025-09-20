@@ -18,9 +18,9 @@ logging.basicConfig(
 )
 
 # Конфигурация
-SYMBOL = "ETHUSDT"  # Торговая пара для спота и перпетуала (альтернатива: "BTCUSDT")
+SYMBOL = "DOGEUSDT"  # Торговая пара для спота и перпетуала (альтернатива: "BTCUSDT")
 STABLE = "USDT"     # Стабильная монета
-POSITION_SIZE = 1500  # Сумма в USDT для каждой позиции (увеличено для мин. суммы)
+POSITION_SIZE = 5  # Сумма в USDT для каждой позиции (увеличено для мин. суммы)
 CHECK_INTERVAL = 3600  # Проверка funding rate каждые 3600 секунд (1 час)
 FUNDING_RATE_THRESHOLD = 0.01  # Минимальный funding rate для входа (%)
 ORDER_TYPE = "Market"  # Тип ордера: "Market" или "Limit"
@@ -34,7 +34,7 @@ API_KEY = os.getenv("API_KEY_BYBIT")
 API_SECRET = os.getenv("API_SECRET_BYBIT")
 
 # Инициализация клиентов
-session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=True)  # testnet=True для тестовой среды, False для реальной
+session = HTTP(api_key=API_KEY, api_secret=API_SECRET, testnet=os.getenv("TEST"))  # testnet=True для тестовой среды, False для реальной
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 async def send_telegram_message(message):
