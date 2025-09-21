@@ -580,7 +580,7 @@ class BybitFundingBot:
             signal_strength = 0
 
             if rsi < self.SCALP_RSI_OVERSOLD:
-                signal = "BUY"
+                signal = "Buy"
                 signal_strength = (self.SCALP_RSI_OVERSOLD - rsi) / 10
                 signals_found += 1
                 logger.info(f"  🟢 СИГНАЛ {signal} | RSI: {rsi:.1f} | Сила: {signal_strength:.2f}")
@@ -610,7 +610,7 @@ class BybitFundingBot:
                     logger.info(f"  ⏳ {symbol} - Слабый сигнал ({signal_strength:.2f})")
 
             elif rsi > self.SCALP_RSI_OVERBOUGHT:
-                signal = "SELL"
+                signal = "Sell"
                 signal_strength = (rsi - self.SCALP_RSI_OVERBOUGHT) / 10
                 signals_found += 1
                 logger.info(f"  🔴 СИГНАЛ {signal} | RSI: {rsi:.1f} | Сила: {signal_strength:.2f}")
