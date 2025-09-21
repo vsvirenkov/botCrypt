@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class BybitFundingBot:
     def __init__(self):
         # Конфигурация - Funding Arbitrage
-        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVEUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Поддерживаемые пары
+        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVESUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Поддерживаемые пары
         self.STABLE = "USDT"
         self.POSITION_SIZE = 5.0  # USDT на каждую позицию
         self.CHECK_INTERVAL = 1800  # 30 минут
@@ -40,7 +40,7 @@ class BybitFundingBot:
         self.CLOSE_NEGATIVE_RATE = True  # Закрывать при отрицательном funding rate
 
         # Конфигурация - Scalping
-        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVEUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Пары для скальпинга
+        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVESUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Пары для скальпинга
         self.SCALP_POSITION_SIZE = 5.0  # USDT на скальп позицию
         self.SCALP_CHECK_INTERVAL = 30  # 30 секунд для скальпинга
         self.SCALP_PROFIT_TARGET = 0.005  # 0.3% тейк-профит
