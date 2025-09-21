@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 import signal
 import sys
 from dotenv import load_dotenv
+import random
 
 # Загрузка переменных из .env
 load_dotenv()
@@ -27,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 class BybitFundingBot:
     def __init__(self):
-        # Конфигурация
-        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT"]  # Поддерживаемые пары
+        # Конфигурация - Funding Arbitrage
+        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVEUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Поддерживаемые пары
         self.STABLE = "USDT"
         self.POSITION_SIZE = 5.0  # USDT на каждую позицию
         self.CHECK_INTERVAL = 1800  # 30 минут
@@ -37,6 +38,22 @@ class BybitFundingBot:
         self.ORDER_TYPE = "Market"  # "Market" или "Limit"
         self.STOP_LOSS_PERCENT = 0.05  # 5% стоп-лосс
         self.CLOSE_NEGATIVE_RATE = True  # Закрывать при отрицательном funding rate
+
+        # Конфигурация - Scalping
+        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVEUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Пары для скальпинга
+        self.SCALP_POSITION_SIZE = 5.0  # USDT на скальп позицию
+        self.SCALP_CHECK_INTERVAL = 30  # 30 секунд для скальпинга
+        self.SCALP_PROFIT_TARGET = 0.005  # 0.3% тейк-профит
+        self.SCALP_RSI_PERIOD = 14  # Период RSI
+        self.SCALP_RSI_OVERSOLD = 35  # Перепроданность RSI
+        self.SCALP_RSI_OVERBOUGHT = 65  # Перекупленность RSI
+        self.SCALP_VOLUME_MULTIPLIER = 1.5  # Множитель объема для подтверждения
+        self.SCALP_MAX_POSITIONS = 3  # Максимум скальп позиций
+        self.SCALP_TRAILING_STOP = 0.001  # 0.1% trailing stop
+        self.SCALP_TIMEOUT_MINUTES = 10  # Закрывать позицию через 10 минут
+
+        # Режим работы
+        self.BOT_MODE = "scalping"  # "funding" или "scalping"
 
         # Telegram настройки
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -67,9 +84,13 @@ class BybitFundingBot:
         self.bot = telegram.Bot(token=self.TELEGRAM_TOKEN)
 
         # Состояние бота
-        self.active_positions = {}  # {symbol: {'spot_order_id': str, 'perp_order_id': str, 'open_time': datetime}}
+        self.active_positions = {}  # {symbol: {...}}
+        self.active_scalp_positions = {}  # Скальп позиции
+        self.ohlcv_cache = {}  # Кэш OHLCV данных
+        self.rsi_cache = {}  # Кэш RSI
         self.running = True
         self.balance_cache = {}  # Кэш баланса
+        self.last_scalp_check = 0
 
         # Graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -78,10 +99,18 @@ class BybitFundingBot:
         # Создание папки для логов
         os.makedirs("logs", exist_ok=True)
 
-        logger.info(f"🚀 Bybit Funding Rate Bot v2.0 запущен")
-        logger.info(f"💰 Размер позиции: {self.POSITION_SIZE} USDT")
-        logger.info(f"📊 Порог funding rate: {self.FUNDING_RATE_THRESHOLD}%")
-        logger.info(f"🔄 Интервал проверки: {self.CHECK_INTERVAL//60} мин")
+        mode_name = "Funding Arbitrage" if self.BOT_MODE == "funding" else "Scalping"
+        logger.info(f"🚀 Bybit {mode_name} Bot v2.1 запущен")
+        logger.info(f"📊 Режим: {self.BOT_MODE}")
+        if self.BOT_MODE == "funding":
+            logger.info(f"💰 Размер позиции: {self.POSITION_SIZE} USDT")
+            logger.info(f"📊 Порог funding rate: {self.FUNDING_RATE_THRESHOLD}%")
+            logger.info(f"🔄 Интервал проверки: {self.CHECK_INTERVAL//60} мин")
+        else:
+            logger.info(f"💰 Размер скальп позиции: {self.SCALP_POSITION_SIZE} USDT")
+            logger.info(f"📊 RSI: {self.SCALP_RSI_OVERSOLD}-{self.SCALP_RSI_OVERBOUGHT}")
+            logger.info(f"🎯 Тейк-профит: {self.SCALP_PROFIT_TARGET*100}%")
+            logger.info(f"🔄 Интервал скальпинга: {self.SCALP_CHECK_INTERVAL} сек")
 
     def _signal_handler(self, signum, frame):
         """Обработка сигналов для graceful shutdown"""
@@ -92,9 +121,17 @@ class BybitFundingBot:
     async def _cleanup(self):
         """Очистка при завершении работы"""
         logger.info("🔄 Закрытие всех активных позиций...")
+
+        # Закрытие funding позиций
         close_tasks = [self._close_position(symbol) for symbol in list(self.active_positions.keys())]
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
+
+        # Закрытие скальп позиций
+        scalp_close_tasks = [self._close_scalp_position(symbol) for symbol in list(self.active_scalp_positions.keys())]
+        if scalp_close_tasks:
+            await asyncio.gather(*scalp_close_tasks, return_exceptions=True)
+
         logger.info("✅ Бот остановлен корректно")
         sys.exit(0)
 
@@ -110,6 +147,7 @@ class BybitFundingBot:
         except Exception as e:
             logger.error(f"❌ Ошибка Telegram: {e}")
 
+    # ========== FUNDING ARBITRAGE METHODS (оставляем без изменений) ==========
     def get_instrument_info(self, category: str, symbol: str) -> Optional[Dict]:
         """Получение информации о торговой паре"""
         try:
@@ -175,7 +213,7 @@ class BybitFundingBot:
             logger.error(f"❌ Ошибка получения цены перпетуала {symbol}: {e}")
             return None
 
-    def get_available_balance(self, coin: str) -> Optional[float]:
+    def get_available_balance(self, coin: str, account_type: str = "UNIFIED") -> Optional[float]:
         """Проверка доступного баланса с поддержкой разных типов аккаунтов"""
         # Кэш на 5 минут
         cache_key = f"{coin}_{int(time.time() // 300)}"
@@ -249,6 +287,371 @@ class BybitFundingBot:
         self.balance_cache[cache_key] = 0.0
         return 0.0
 
+    # ========== SCALPING METHODS ==========
+    def get_ohlcv(self, symbol: str, interval: str = "1", limit: int = 100) -> Optional[List]:
+        """Получение OHLCV данных"""
+        cache_key = f"{symbol}_{interval}_{limit}_{int(time.time() // 60)}"
+        if cache_key in self.ohlcv_cache:
+            return self.ohlcv_cache[cache_key]
+
+        try:
+            response = self.session.get_kline(
+                category="linear",
+                symbol=symbol,
+                interval=interval,
+                limit=limit
+            )
+
+            if response.get("retCode") != 0:
+                logger.error(f"❌ Ошибка получения OHLCV {symbol}: {response.get('retMsg')}")
+                return None
+
+            klines = response["result"]["list"]
+            ohlcv_data = []
+            for kline in klines:
+                ohlcv_data.append({
+                    "timestamp": int(kline[0]),
+                    "open": float(kline[1]),
+                    "high": float(kline[2]),
+                    "low": float(kline[3]),
+                    "close": float(kline[4]),
+                    "volume": float(kline[5])
+                })
+
+            self.ohlcv_cache[cache_key] = ohlcv_data
+            return ohlcv_data
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения OHLCV {symbol}: {e}")
+            return None
+
+    def calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
+        """Расчет RSI индикатора"""
+        if len(prices) < period + 1:
+            return None
+
+        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+        gains = [d if d > 0 else 0 for d in deltas[-period:]]
+        losses = [-d if d < 0 else 0 for d in deltas[-period:]]
+
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+
+        if avg_loss == 0:
+            return 100
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
+    def get_rsi(self, symbol: str) -> Optional[float]:
+        """Получение RSI для символа"""
+        cache_key = f"{symbol}_rsi_{int(time.time() // 300)}"
+        if cache_key in self.rsi_cache:
+            return self.rsi_cache[cache_key]
+
+        ohlcv = self.get_ohlcv(symbol, "1", 50)
+        if not ohlcv:
+            return None
+
+        closes = [candle["close"] for candle in ohlcv]
+        rsi = self.calculate_rsi(closes, self.SCALP_RSI_PERIOD)
+
+        if rsi is not None:
+            self.rsi_cache[cache_key] = rsi
+            logger.debug(f"📊 {symbol} RSI({self.SCALP_RSI_PERIOD}): {rsi:.2f}")
+
+        return rsi
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """Получение текущей цены"""
+        try:
+            ticker = self.session.get_tickers(category="linear", symbol=symbol)
+            if ticker.get("retCode") != 0:
+                return None
+            return float(ticker["result"]["list"][0]["lastPrice"])
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения цены {symbol}: {e}")
+            return None
+
+    def get_volume_info(self, symbol: str) -> Optional[Dict]:
+        """Получение информации об объеме торгов"""
+        try:
+            ohlcv = self.get_ohlcv(symbol, "1", 20)
+            if not ohlcv:
+                return None
+
+            current_volume = ohlcv[0]["volume"]
+            avg_volume = sum(candle["volume"] for candle in ohlcv[1:]) / len(ohlcv[1:])
+
+            return {
+                "current": current_volume,
+                "average": avg_volume,
+                "multiplier": current_volume / avg_volume if avg_volume > 0 else 1.0
+            }
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения объема {symbol}: {e}")
+            return None
+
+    def calculate_scalp_qty(self, symbol: str, position_size: float) -> Optional[float]:
+        """Расчет количества для скальпинга"""
+        try:
+            instrument_info = self.get_instrument_info("linear", symbol)
+            if not instrument_info:
+                return None
+
+            price = self.get_current_price(symbol)
+            if not price or price <= 0:
+                return None
+
+            qty = position_size / price
+            qty = max(round(qty, instrument_info["qtyPrecision"]), instrument_info["minOrderQty"])
+
+            return qty
+        except Exception as e:
+            logger.error(f"❌ Ошибка расчета qty {symbol}: {e}")
+            return None
+
+    async def place_scalp_order(self, symbol: str, side: str, qty: float, price: float) -> Optional[str]:
+        """Размещение скальп ордера"""
+        try:
+            order_params = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": side,
+                "orderType": "Market",
+                "qty": str(qty)
+            }
+
+            logger.info(f"⚡ {symbol} {side} scalp: qty={qty:.6f} @ {price:.4f}")
+            response = self.session.place_order(**order_params)
+
+            if response.get("retCode") != 0:
+                error_msg = f"❌ {symbol} Scalp {side} ошибка: {response.get('retMsg')}"
+                logger.error(error_msg)
+                await self.send_telegram_message(error_msg)
+                return None
+
+            order_id = response["result"]["orderId"]
+            logger.info(f"✅ {symbol} Scalp ордер размещен: {order_id}")
+
+            message = f"⚡ <b>{symbol}</b> Scalp {side}\n💰 {qty:.6f} @ {price:,.4f}\n🎯 Target: {self.SCALP_PROFIT_TARGET*100}%"
+            await self.send_telegram_message(message, parse_mode="HTML")
+
+            return order_id
+
+        except Exception as e:
+            logger.error(f"❌ {symbol} Scalp исключение: {e}")
+            return None
+
+    async def _close_scalp_position(self, symbol: str) -> bool:
+        """Закрытие скальп позиции"""
+        try:
+            if symbol not in self.active_scalp_positions:
+                logger.info(f"ℹ️  {symbol}: Скальп позиция не найдена")
+                return True
+
+            position = self.active_scalp_positions[symbol]
+            success = True
+
+            # Закрытие позиции
+            close_side = "Sell" if position["side"] == "Buy" else "Buy"
+            qty = position["qty"]
+
+            close_response = self.session.close_position(
+                category="linear",
+                symbol=symbol
+            )
+
+            if close_response.get("retCode") == 0:
+                logger.info(f"✅ {symbol} Scalp позиция закрыта")
+
+                # Расчет P&L
+                entry_price = position["entry_price"]
+                exit_price = self.get_current_price(symbol)
+                if exit_price:
+                    if position["side"] == "Buy":
+                        pnl_percent = (exit_price - entry_price) / entry_price * 100
+                    else:
+                        pnl_percent = (entry_price - exit_price) / entry_price * 100
+
+                    pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
+                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
+
+                    status = "💰 Прибыль" if pnl_usd > 0 else "💸 Убыток"
+                    message = (
+                        f"🔒 <b>{symbol}</b> Scalp закрыт\n"
+                        f"⏱️  Длительность: {duration:.1f} мин\n"
+                        f"📊 P&L: {pnl_usd:.2f} USDT ({pnl_percent:.2f}%)\n"
+                        f"{status}"
+                    )
+                    await self.send_telegram_message(message, parse_mode="HTML")
+                    logger.info(f"📊 {symbol} Scalp P&L: {pnl_usd:.2f} USDT ({pnl_percent:.2f}%)")
+                else:
+                    message = f"🔒 <b>{symbol}</b> Scalp закрыт\n⏱️  Длительность: {(datetime.now() - position['open_time']).total_seconds() / 60:.1f} мин"
+                    await self.send_telegram_message(message, parse_mode="HTML")
+            else:
+                logger.error(f"❌ {symbol} Scalp закрытие ошибка: {close_response.get('retMsg')}")
+                success = False
+
+            # Удаление из активных позиций
+            del self.active_scalp_positions[symbol]
+            return success
+
+        except Exception as e:
+            logger.error(f"❌ {symbol} Ошибка закрытия скальп позиции: {e}")
+            return False
+
+    async def check_scalp_signals(self):
+        """Проверка скальп сигналов"""
+        if not self.running or self.BOT_MODE != "scalping":
+            return
+
+        current_time = time.time()
+        # Проверяем не чаще чем раз в CHECK_INTERVAL секунд
+        if current_time - self.last_scalp_check < self.SCALP_CHECK_INTERVAL:
+            return
+        self.last_scalp_check = current_time
+
+        # Проверяем таймауты позиций
+        timeout_positions = []
+        for symbol, position in self.active_scalp_positions.items():
+            duration = (datetime.now() - position["open_time"]).total_seconds() / 60
+            if duration > self.SCALP_TIMEOUT_MINUTES:
+                timeout_positions.append(symbol)
+
+        for symbol in timeout_positions:
+            logger.info(f"⏰ {symbol}: Таймаут позиции ({self.SCALP_TIMEOUT_MINUTES} мин)")
+            await self._close_scalp_position(symbol)
+
+        # Проверяем существующие позиции на тейк-профит и стоп-лосс
+        for symbol in list(self.active_scalp_positions.keys()):
+            await self._manage_scalp_position(symbol)
+
+        # Ищем новые сигналы
+        if len(self.active_scalp_positions) >= self.SCALP_MAX_POSITIONS:
+            logger.debug(f"⚡ Максимум скальп позиций ({self.SCALP_MAX_POSITIONS}), пропускаем")
+            return
+
+        available = self.get_available_balance(self.STABLE)
+        if available is None or available < self.SCALP_POSITION_SIZE:
+            logger.warning(f"⚠️  Недостаточно баланса для скальпинга: {available:.2f}")
+            return
+
+        for symbol in self.SCALP_SYMBOLS:
+            if symbol in self.active_scalp_positions:
+                continue
+
+            # Получаем индикаторы
+            rsi = self.get_rsi(symbol)
+            if rsi is None:
+                continue
+
+            volume_info = self.get_volume_info(symbol)
+            if not volume_info:
+                continue
+
+            price = self.get_current_price(symbol)
+            if not price:
+                continue
+
+            # Проверяем объем
+            if volume_info["multiplier"] < self.SCALP_VOLUME_MULTIPLIER:
+                logger.debug(f"📊 {symbol}: Низкий объем ({volume_info['multiplier']:.2f}x)")
+                continue
+
+            signal = None
+            signal_strength = 0
+
+            # Сигналы покупки
+            if rsi < self.SCALP_RSI_OVERSOLD:
+                signal = "BUY"
+                signal_strength = (self.SCALP_RSI_OVERSOLD - rsi) / 10  # Сила сигнала
+                logger.info(f"🟢 {symbol}: BUY сигнал RSI={rsi:.1f}, Volume={volume_info['multiplier']:.2f}x")
+
+            # Сигналы продажи
+            elif rsi > self.SCALP_RSI_OVERBOUGHT:
+                signal = "SELL"
+                signal_strength = (rsi - self.SCALP_RSI_OVERBOUGHT) / 10
+                logger.info(f"🔴 {symbol}: SELL сигнал RSI={rsi:.1f}, Volume={volume_info['multiplier']:.2f}x")
+
+            # Открываем позицию при сильном сигнале
+            if signal and signal_strength > 0.5:  # Только сильные сигналы
+                qty = self.calculate_scalp_qty(symbol, self.SCALP_POSITION_SIZE)
+                if not qty:
+                    continue
+
+                order_id = await self.place_scalp_order(symbol, signal, qty, price)
+                if order_id:
+                    self.active_scalp_positions[symbol] = {
+                        "order_id": order_id,
+                        "side": signal,
+                        "qty": qty,
+                        "entry_price": price,
+                        "open_time": datetime.now(),
+                        "high_watermark": price,
+                        "low_watermark": price,
+                        "rsi_at_open": rsi
+                    }
+                await asyncio.sleep(2)  # Пауза между ордерами
+
+    async def _manage_scalp_position(self, symbol: str):
+        """Управление скальп позицией"""
+        if symbol not in self.active_scalp_positions:
+            return
+
+        position = self.active_scalp_positions[symbol]
+        current_price = self.get_current_price(symbol)
+        if not current_price:
+            return
+
+        entry_price = position["entry_price"]
+        side = position["side"]
+        duration = (datetime.now() - position["open_time"]).total_seconds() / 60
+
+        # Обновляем водяные отметки
+        if side == "Buy":
+            position["high_watermark"] = max(position["high_watermark"], current_price)
+        else:
+            position["low_watermark"] = min(position["low_watermark"], current_price)
+
+        # Проверяем тейк-профит
+        profit_target = self.SCALP_PROFIT_TARGET
+        should_close = False
+        close_reason = ""
+
+        if side == "Buy":
+            if current_price >= entry_price * (1 + profit_target):
+                should_close = True
+                close_reason = f"Take Profit {profit_target*100}%"
+            elif current_price <= entry_price * (1 - self.STOP_LOSS_PERCENT):
+                should_close = True
+                close_reason = f"Stop Loss {self.STOP_LOSS_PERCENT*100}%"
+            # Trailing stop
+            elif position["high_watermark"] > entry_price:
+                trail_stop = position["high_watermark"] * (1 - self.SCALP_TRAILING_STOP)
+                if current_price <= trail_stop:
+                    should_close = True
+                    close_reason = f"Trailing Stop {self.SCALP_TRAILING_STOP*100}%"
+        else:  # SELL
+            if current_price <= entry_price * (1 - profit_target):
+                should_close = True
+                close_reason = f"Take Profit {profit_target*100}%"
+            elif current_price >= entry_price * (1 + self.STOP_LOSS_PERCENT):
+                should_close = True
+                close_reason = f"Stop Loss {self.STOP_LOSS_PERCENT*100}%"
+            # Trailing stop
+            elif position["low_watermark"] < entry_price:
+                trail_stop = position["low_watermark"] * (1 + self.SCALP_TRAILING_STOP)
+                if current_price >= trail_stop:
+                    should_close = True
+                    close_reason = f"Trailing Stop {self.SCALP_TRAILING_STOP*100}%"
+
+        if should_close:
+            logger.info(f"📊 {symbol}: Закрытие по {close_reason}")
+            await self._close_scalp_position(symbol)
+
+    # ========== FUNDING ARBITRAGE METHODS (оставшиеся без изменений) ==========
     def calculate_qty(self, position_size: float, price: float, min_order_qty: float, qty_precision: int) -> float:
         """Расчет количества с учетом ограничений"""
         if price <= 0:
@@ -570,7 +973,7 @@ class BybitFundingBot:
             return False
 
     async def monitor_positions(self):
-        """Мониторинг активных позиций"""
+        """Мониторинг активных позиций (funding)"""
         try:
             for symbol in list(self.active_positions.keys()):
                 position = self.active_positions[symbol]
@@ -608,7 +1011,11 @@ class BybitFundingBot:
             if available is None:
                 return
 
-            total_required = len(self.SYMBOLS) * self.POSITION_SIZE * 2
+            if self.BOT_MODE == "funding":
+                total_required = len(self.SYMBOLS) * self.POSITION_SIZE * 2
+            else:
+                total_required = self.SCALP_MAX_POSITIONS * self.SCALP_POSITION_SIZE
+
             if available < total_required * 0.3:  # Менее 30% от требуемого
                 message = (
                     f"⚠️ <b>КРИТИЧЕСКИ НИЗКИЙ БАЛАНС!</b>\n"
@@ -645,32 +1052,37 @@ class BybitFundingBot:
                 # Проверка баланса
                 await self.check_balance_alert()
 
-                # Мониторинг позиций
-                await self.monitor_positions()
+                if self.BOT_MODE == "funding":
+                    # Funding Arbitrage логика
+                    await self.monitor_positions()
 
-                # Проверка новых возможностей
-                for symbol in self.SYMBOLS:
-                    if symbol in self.active_positions and len(self.active_positions) >= self.MAX_POSITIONS_PER_SYMBOL * len(self.SYMBOLS):
-                        continue
+                    # Проверка новых возможностей
+                    for symbol in self.SYMBOLS:
+                        if symbol in self.active_positions and len(self.active_positions) >= self.MAX_POSITIONS_PER_SYMBOL * len(self.SYMBOLS):
+                            continue
 
-                    funding_rate = self.get_funding_rate(symbol)
-                    if funding_rate is None:
-                        continue
+                        funding_rate = self.get_funding_rate(symbol)
+                        if funding_rate is None:
+                            continue
 
-                    logger.info(f"📊 {symbol}: Funding Rate {funding_rate:.4f}%")
+                        logger.info(f"📊 {symbol}: Funding Rate {funding_rate:.4f}%")
 
-                    if funding_rate > self.FUNDING_RATE_THRESHOLD:
-                        logger.info(f"🎯 {symbol}: Funding rate {funding_rate:.4f}% > порога {self.FUNDING_RATE_THRESHOLD}%")
-                        success = await self.open_arbitrage_position(symbol)
-                        if success:
-                            await asyncio.sleep(60)  # Пауза после открытия позиции
-                    elif funding_rate < 0 and symbol in self.active_positions:
-                        logger.info(f"📉 {symbol}: Funding rate отрицательный ({funding_rate:.2f}%), закрываем")
-                        await self._close_position(symbol)
+                        if funding_rate > self.FUNDING_RATE_THRESHOLD:
+                            logger.info(f"🎯 {symbol}: Funding rate {funding_rate:.4f}% > порога {self.FUNDING_RATE_THRESHOLD}%")
+                            success = await self.open_arbitrage_position(symbol)
+                            if success:
+                                await asyncio.sleep(60)  # Пауза после открытия позиции
+                        elif funding_rate < 0 and symbol in self.active_positions:
+                            logger.info(f"📉 {symbol}: Funding rate отрицательный ({funding_rate:.2f}%), закрываем")
+                            await self._close_position(symbol)
 
-                # Пауза между циклами
-                logger.debug(f"😴 Пауза {self.CHECK_INTERVAL} секунд...")
-                await asyncio.sleep(self.CHECK_INTERVAL)
+                    # Пауза между циклами
+                    await asyncio.sleep(self.CHECK_INTERVAL)
+
+                else:
+                    # Scalping логика
+                    await self.check_scalp_signals()
+                    await asyncio.sleep(self.SCALP_CHECK_INTERVAL)
 
             except asyncio.CancelledError:
                 logger.info("🛑 Основной цикл отменен")
@@ -690,7 +1102,7 @@ class BybitFundingBot:
                     await asyncio.sleep(1800)  # 30 минут
                     consecutive_errors = 0
                 else:
-                    await asyncio.sleep(300)  # 5 минут при ошибке
+                    await asyncio.sleep(60)  # 1 минута при ошибке
 
     async def run(self):
         """Запуск бота"""
@@ -718,17 +1130,32 @@ class BybitFundingBot:
             else:
                 logger.info(f"💰 Начальный баланс: {available:.2f} {self.STABLE}")
 
-            # ИСПРАВЛЕНО: правильное форматирование строки
+            # Формируем сообщение запуска
             balance_display = f"{available:.2f}" if available is not None else "N/A"
+
+            if self.BOT_MODE == "funding":
+                mode_info = [
+                    f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
+                    f"📈 <b>Пары</b>: {', '.join(self.SYMBOLS)}",
+                    f"💼 <b>Размер</b>: {self.POSITION_SIZE} USDT",
+                    f"📊 <b>Порог</b>: {self.FUNDING_RATE_THRESHOLD}%",
+                    f"🔄 <b>Интервал</b>: {self.CHECK_INTERVAL//60} мин",
+                    f"🛡️ <b>Stop-loss</b>: {self.STOP_LOSS_PERCENT*100}%"
+                ]
+            else:
+                mode_info = [
+                    f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
+                    f"📈 <b>Пары</b>: {', '.join(self.SCALP_SYMBOLS)}",
+                    f"⚡ <b>Размер</b>: {self.SCALP_POSITION_SIZE} USDT",
+                    f"📊 <b>RSI</b>: {self.SCALP_RSI_OVERSOLD}-{self.SCALP_RSI_OVERBOUGHT}",
+                    f"🎯 <b>Тейк-профит</b>: {self.SCALP_PROFIT_TARGET*100}%",
+                    f"🔄 <b>Интервал</b>: {self.SCALP_CHECK_INTERVAL} сек",
+                    f"⚙️  <b>Макс. позиций</b>: {self.SCALP_MAX_POSITIONS}"
+                ]
+
             message_parts = [
-                f"🤖 <b>Bybit Funding Bot v2.0</b> запущен!",
-                f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
-                f"📈 <b>Пары</b>: {', '.join(self.SYMBOLS)}",
-                f"💼 <b>Размер</b>: {self.POSITION_SIZE} USDT",
-                f"📊 <b>Порог</b>: {self.FUNDING_RATE_THRESHOLD}%",
-                f"🔄 <b>Интервал</b>: {self.CHECK_INTERVAL//60} мин",
-                f"🛡️ <b>Stop-loss</b>: {self.STOP_LOSS_PERCENT*100}%"
-            ]
+                f"🤖 <b>Bybit {mode_info[0].split(':')[0]} Bot v2.1</b> запущен!",
+            ] + mode_info[1:]
 
             startup_message = "\n".join(message_parts)
             await self.send_telegram_message(startup_message, parse_mode="HTML")
