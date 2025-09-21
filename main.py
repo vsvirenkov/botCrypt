@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class BybitFundingBot:
     def __init__(self):
         # Конфигурация - Funding Arbitrage
-        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVESUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Поддерживаемые пары
+        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT"]  # Поддерживаемые пары
         self.STABLE = "USDT"
         self.POSITION_SIZE = 5.0  # USDT на каждую позицию
         self.CHECK_INTERVAL = 1800  # 30 минут
@@ -39,14 +39,14 @@ class BybitFundingBot:
         self.STOP_LOSS_PERCENT = 0.05  # 5% стоп-лосс
         self.CLOSE_NEGATIVE_RATE = True  # Закрывать при отрицательном funding rate
 
-        # Конфигурация - Scalping
-        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT","WAVESUSDT","APEUSDT","MANAUSDT","LINKUSDT","XRPUSDT"]  # Пары для скальпинга
-        self.SCALP_POSITION_SIZE = 5.0  # USDT на скальп позицию
+        # Конфигурация - Scalping (ИСПРАВЛЕНО: только проверенные пары)
+        self.SCALP_SYMBOLS = ["BTCUSDT", "ETHUSDT", "DOGEUSDT", "XRPUSDT", "ADAUSDT"]  # Только проверенные пары
+        self.SCALP_POSITION_SIZE = 10.0  # USDT на скальп позицию
         self.SCALP_CHECK_INTERVAL = 30  # 30 секунд для скальпинга
-        self.SCALP_PROFIT_TARGET = 0.005  # 0.3% тейк-профит
+        self.SCALP_PROFIT_TARGET = 0.003  # 0.3% тейк-профит
         self.SCALP_RSI_PERIOD = 14  # Период RSI
-        self.SCALP_RSI_OVERSOLD = 35  # Перепроданность RSI
-        self.SCALP_RSI_OVERBOUGHT = 65  # Перекупленность RSI
+        self.SCALP_RSI_OVERSOLD = 30  # Перепроданность RSI
+        self.SCALP_RSI_OVERBOUGHT = 70  # Перекупленность RSI
         self.SCALP_VOLUME_MULTIPLIER = 1.5  # Множитель объема для подтверждения
         self.SCALP_MAX_POSITIONS = 3  # Максимум скальп позиций
         self.SCALP_TRAILING_STOP = 0.001  # 0.1% trailing stop
@@ -88,6 +88,7 @@ class BybitFundingBot:
         self.active_scalp_positions = {}  # Скальп позиции
         self.ohlcv_cache = {}  # Кэш OHLCV данных
         self.rsi_cache = {}  # Кэш RSI
+        self.symbol_info_cache = {}  # Кэш информации о символах
         self.running = True
         self.balance_cache = {}  # Кэш баланса
         self.last_scalp_check = 0
@@ -99,8 +100,11 @@ class BybitFundingBot:
         # Создание папки для логов
         os.makedirs("logs", exist_ok=True)
 
+        # ИНИЦИАЛИЗАЦИЯ: Проверяем доступность символов при запуске
+        self._validate_symbols()
+
         mode_name = "Funding Arbitrage" if self.BOT_MODE == "funding" else "Scalping"
-        logger.info(f"🚀 Bybit {mode_name} Bot v2.1 запущен")
+        logger.info(f"🚀 Bybit {mode_name} Bot v2.2 запущен")
         logger.info(f"📊 Режим: {self.BOT_MODE}")
         if self.BOT_MODE == "funding":
             logger.info(f"💰 Размер позиции: {self.POSITION_SIZE} USDT")
@@ -111,6 +115,75 @@ class BybitFundingBot:
             logger.info(f"📊 RSI: {self.SCALP_RSI_OVERSOLD}-{self.SCALP_RSI_OVERBOUGHT}")
             logger.info(f"🎯 Тейк-профит: {self.SCALP_PROFIT_TARGET*100}%")
             logger.info(f"🔄 Интервал скальпинга: {self.SCALP_CHECK_INTERVAL} сек")
+
+    def _validate_symbols(self):
+        """Проверка доступности всех символов при запуске"""
+        logger.info("🔍 Проверка доступности торговых пар...")
+
+        all_symbols = list(set(self.SYMBOLS + self.SCALP_SYMBOLS))
+        valid_symbols = []
+        invalid_symbols = []
+
+        for symbol in all_symbols:
+            try:
+                # Проверяем для linear (perpetual)
+                response = self.session.get_instruments_info(category="linear", symbol=symbol)
+                if response.get("retCode") == 0 and response["result"]["list"]:
+                    logger.info(f"✅ {symbol}: Доступен для Perpetual")
+                    valid_symbols.append(symbol)
+                    self.symbol_info_cache[symbol] = {
+                        "linear": True,
+                        "spot": True,  # Предполагаем, что если есть linear, то есть и spot
+                        "last_check": time.time()
+                    }
+                else:
+                    logger.warning(f"⚠️  {symbol}: Недоступен для Perpetual")
+                    invalid_symbols.append(symbol)
+
+            except Exception as e:
+                logger.warning(f"⚠️  {symbol}: Ошибка проверки - {e}")
+                invalid_symbols.append(symbol)
+
+        # Обновляем списки только валидными символами
+        self.SYMBOLS = [s for s in self.SYMBOLS if s in valid_symbols]
+        self.SCALP_SYMBOLS = [s for s in self.SCALP_SYMBOLS if s in valid_symbols]
+
+        logger.info(f"📊 Валидные символы: {valid_symbols}")
+        if invalid_symbols:
+            logger.warning(f"⚠️  Недоступные символы: {invalid_symbols}")
+            if self.BOT_MODE == "scalping" and not self.SCALP_SYMBOLS:
+                logger.error("❌ Нет доступных символов для скальпинга!")
+                raise ValueError("Нет доступных символов для выбранного режима")
+
+        if not self.SYMBOLS and self.BOT_MODE == "funding":
+            logger.error("❌ Нет доступных символов для арбитража!")
+            raise ValueError("Нет доступных символов для выбранного режима")
+
+    def is_symbol_valid(self, symbol: str, category: str = "linear") -> bool:
+        """Проверка валидности символа с кэшированием"""
+        if symbol in self.symbol_info_cache:
+            info = self.symbol_info_cache[symbol]
+            # Кэш валиден 1 час
+            if time.time() - info["last_check"] < 3600:
+                return info.get(category, False)
+
+        try:
+            response = self.session.get_instruments_info(category=category, symbol=symbol)
+            is_valid = response.get("retCode") == 0 and response["result"]["list"]
+
+            self.symbol_info_cache[symbol] = {
+                category: is_valid,
+                "last_check": time.time()
+            }
+
+            if not is_valid:
+                logger.warning(f"⚠️  {symbol}: Недоступен для {category}")
+
+            return is_valid
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки {symbol}: {e}")
+            return False
 
     def _signal_handler(self, signum, frame):
         """Обработка сигналов для graceful shutdown"""
@@ -147,9 +220,13 @@ class BybitFundingBot:
         except Exception as e:
             logger.error(f"❌ Ошибка Telegram: {e}")
 
-    # ========== FUNDING ARBITRAGE METHODS (оставляем без изменений) ==========
+    # ========== FUNDING ARBITRAGE METHODS ==========
     def get_instrument_info(self, category: str, symbol: str) -> Optional[Dict]:
-        """Получение информации о торговой паре"""
+        """Получение информации о торговой паре с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, category):
+            logger.error(f"❌ {symbol}: Символ недоступен для {category}")
+            return None
+
         try:
             response = self.session.get_instruments_info(category=category, symbol=symbol)
             if response.get("retCode") != 0:
@@ -174,7 +251,10 @@ class BybitFundingBot:
             return None
 
     def get_funding_rate(self, symbol: str) -> Optional[float]:
-        """Получение текущего funding rate"""
+        """Получение текущего funding rate с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            return None
+
         try:
             response = self.session.get_tickers(category="linear", symbol=symbol)
             if response.get("retCode") != 0:
@@ -190,7 +270,10 @@ class BybitFundingBot:
             return None
 
     def get_spot_price(self, symbol: str) -> Optional[float]:
-        """Получение текущей цены на споте"""
+        """Получение текущей цены на споте с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "spot"):
+            return None
+
         try:
             ticker = self.session.get_tickers(category="spot", symbol=symbol)
             if ticker.get("retCode") != 0:
@@ -202,7 +285,10 @@ class BybitFundingBot:
             return None
 
     def get_perp_price(self, symbol: str) -> Optional[float]:
-        """Получение текущей цены на перпетуале"""
+        """Получение текущей цены на перпетуале с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            return None
+
         try:
             ticker = self.session.get_tickers(category="linear", symbol=symbol)
             if ticker.get("retCode") != 0:
@@ -287,9 +373,13 @@ class BybitFundingBot:
         self.balance_cache[cache_key] = 0.0
         return 0.0
 
-    # ========== SCALPING METHODS ==========
+    # ========== SCALPING METHODS (ИСПРАВЛЕНЫ) ==========
     def get_ohlcv(self, symbol: str, interval: str = "1", limit: int = 100) -> Optional[List]:
-        """Получение OHLCV данных"""
+        """Получение OHLCV данных с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.error(f"❌ {symbol}: Недоступен для OHLCV")
+            return None
+
         cache_key = f"{symbol}_{interval}_{limit}_{int(time.time() // 60)}"
         if cache_key in self.ohlcv_cache:
             return self.ohlcv_cache[cache_key]
@@ -346,6 +436,9 @@ class BybitFundingBot:
 
     def get_rsi(self, symbol: str) -> Optional[float]:
         """Получение RSI для символа"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            return None
+
         cache_key = f"{symbol}_rsi_{int(time.time() // 300)}"
         if cache_key in self.rsi_cache:
             return self.rsi_cache[cache_key]
@@ -364,10 +457,14 @@ class BybitFundingBot:
         return rsi
 
     def get_current_price(self, symbol: str) -> Optional[float]:
-        """Получение текущей цены"""
+        """Получение текущей цены с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            return None
+
         try:
             ticker = self.session.get_tickers(category="linear", symbol=symbol)
             if ticker.get("retCode") != 0:
+                logger.error(f"❌ Ошибка получения цены {symbol}: {ticker.get('retMsg')}")
                 return None
             return float(ticker["result"]["list"][0]["lastPrice"])
         except Exception as e:
@@ -376,6 +473,9 @@ class BybitFundingBot:
 
     def get_volume_info(self, symbol: str) -> Optional[Dict]:
         """Получение информации об объеме торгов"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            return None
+
         try:
             ohlcv = self.get_ohlcv(symbol, "1", 20)
             if not ohlcv:
@@ -394,7 +494,10 @@ class BybitFundingBot:
             return None
 
     def calculate_scalp_qty(self, symbol: str, position_size: float) -> Optional[float]:
-        """Расчет количества для скальпинга"""
+        """Расчет количества для скальпинга с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            return None
+
         try:
             instrument_info = self.get_instrument_info("linear", symbol)
             if not instrument_info:
@@ -413,8 +516,26 @@ class BybitFundingBot:
             return None
 
     async def place_scalp_order(self, symbol: str, side: str, qty: float, price: float) -> Optional[str]:
-        """Размещение скальп ордера"""
+        """Размещение скальп ордера с улучшенной обработкой ошибок"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.error(f"❌ {symbol}: Символ недоступен для торговли")
+            return None
+
         try:
+            # Проверяем правильность side
+            if side not in ["Buy", "Sell"]:
+                logger.error(f"❌ {symbol}: Неверный side: {side}")
+                return None
+
+            # Проверяем количество
+            instrument_info = self.get_instrument_info("linear", symbol)
+            if not instrument_info:
+                return None
+
+            if qty < instrument_info["minOrderQty"]:
+                logger.error(f"❌ {symbol}: qty {qty} < min {instrument_info['minOrderQty']}")
+                return None
+
             order_params = {
                 "category": "linear",
                 "symbol": symbol,
@@ -427,9 +548,21 @@ class BybitFundingBot:
             response = self.session.place_order(**order_params)
 
             if response.get("retCode") != 0:
-                error_msg = f"❌ {symbol} Scalp {side} ошибка: {response.get('retMsg')}"
+                error_msg = f"❌ {symbol} Scalp {side} ошибка: {response.get('retMsg')} (Code: {response.get('retCode')})"
                 logger.error(error_msg)
-                await self.send_telegram_message(error_msg)
+
+                # Специальная обработка распространенных ошибок
+                if "10001" in str(response.get('retCode')):
+                    logger.error(f"🚫 {symbol}: Символ недоступен или неверный side. Удаляем из списка.")
+                    self.symbol_info_cache[symbol] = {
+                        "linear": False,
+                        "spot": False,
+                        "last_check": time.time()
+                    }
+                    self.SCALP_SYMBOLS = [s for s in self.SCALP_SYMBOLS if s != symbol]
+                else:
+                    await self.send_telegram_message(error_msg)
+
                 return None
 
             order_id = response["result"]["orderId"]
@@ -441,11 +574,17 @@ class BybitFundingBot:
             return order_id
 
         except Exception as e:
-            logger.error(f"❌ {symbol} Scalp исключение: {e}")
+            error_msg = f"❌ {symbol} Scalp исключение: {e}"
+            logger.error(error_msg)
+            await self.send_telegram_message(error_msg)
             return None
 
     async def _close_scalp_position(self, symbol: str) -> bool:
-        """Закрытие скальп позиции"""
+        """Закрытие скальп позиции с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.error(f"❌ {symbol}: Символ недоступен, пропускаем закрытие")
+            return False
+
         try:
             if symbol not in self.active_scalp_positions:
                 logger.info(f"ℹ️  {symbol}: Скальп позиция не найдена")
@@ -495,7 +634,8 @@ class BybitFundingBot:
                 success = False
 
             # Удаление из активных позиций
-            del self.active_scalp_positions[symbol]
+            if symbol in self.active_scalp_positions:
+                del self.active_scalp_positions[symbol]
             return success
 
         except Exception as e:
@@ -503,7 +643,7 @@ class BybitFundingBot:
             return False
 
     async def check_scalp_signals(self):
-        """Проверка скальп сигналов"""
+        """Проверка скальп сигналов с улучшенной обработкой ошибок"""
         if not self.running or self.BOT_MODE != "scalping":
             return
 
@@ -521,12 +661,20 @@ class BybitFundingBot:
                 timeout_positions.append(symbol)
 
         for symbol in timeout_positions:
-            logger.info(f"⏰ {symbol}: Таймаут позиции ({self.SCALP_TIMEOUT_MINUTES} мин)")
-            await self._close_scalp_position(symbol)
+            if self.is_symbol_valid(symbol, "linear"):
+                logger.info(f"⏰ {symbol}: Таймаут позиции ({self.SCALP_TIMEOUT_MINUTES} мин)")
+                await self._close_scalp_position(symbol)
+            else:
+                logger.warning(f"⚠️  {symbol}: Символ недоступен, удаляем из активных")
+                del self.active_scalp_positions[symbol]
 
         # Проверяем существующие позиции на тейк-профит и стоп-лосс
         for symbol in list(self.active_scalp_positions.keys()):
-            await self._manage_scalp_position(symbol)
+            if self.is_symbol_valid(symbol, "linear"):
+                await self._manage_scalp_position(symbol)
+            else:
+                logger.warning(f"⚠️  {symbol}: Символ недоступен, закрываем позицию")
+                del self.active_scalp_positions[symbol]
 
         # Ищем новые сигналы
         if len(self.active_scalp_positions) >= self.SCALP_MAX_POSITIONS:
@@ -535,24 +683,34 @@ class BybitFundingBot:
 
         available = self.get_available_balance(self.STABLE)
         if available is None or available < self.SCALP_POSITION_SIZE:
-            logger.warning(f"⚠️  Недостаточно баланса для скальпинга: {available:.2f}")
+            logger.warning(f"⚠️  Недостаточно баланса для скальпинга: {available:.2f if available is not None else 'N/A'}")
             return
 
-        for symbol in self.SCALP_SYMBOLS:
+        # ИСПРАВЛЕНО: Проверяем только валидные символы
+        valid_scalp_symbols = [s for s in self.SCALP_SYMBOLS if self.is_symbol_valid(s, "linear")]
+
+        if not valid_scalp_symbols:
+            logger.warning("⚠️  Нет доступных символов для скальпинга")
+            return
+
+        for symbol in valid_scalp_symbols:
             if symbol in self.active_scalp_positions:
                 continue
 
             # Получаем индикаторы
             rsi = self.get_rsi(symbol)
             if rsi is None:
+                logger.debug(f"📊 {symbol}: Не удалось получить RSI")
                 continue
 
             volume_info = self.get_volume_info(symbol)
             if not volume_info:
+                logger.debug(f"📊 {symbol}: Не удалось получить объем")
                 continue
 
             price = self.get_current_price(symbol)
             if not price:
+                logger.debug(f"📊 {symbol}: Не удалось получить цену")
                 continue
 
             # Проверяем объем
@@ -565,13 +723,13 @@ class BybitFundingBot:
 
             # Сигналы покупки
             if rsi < self.SCALP_RSI_OVERSOLD:
-                signal = "BUY"
+                signal = "Buy"
                 signal_strength = (self.SCALP_RSI_OVERSOLD - rsi) / 10  # Сила сигнала
                 logger.info(f"🟢 {symbol}: BUY сигнал RSI={rsi:.1f}, Volume={volume_info['multiplier']:.2f}x")
 
             # Сигналы продажи
             elif rsi > self.SCALP_RSI_OVERBOUGHT:
-                signal = "SELL"
+                signal = "Sell"
                 signal_strength = (rsi - self.SCALP_RSI_OVERBOUGHT) / 10
                 logger.info(f"🔴 {symbol}: SELL сигнал RSI={rsi:.1f}, Volume={volume_info['multiplier']:.2f}x")
 
@@ -579,6 +737,7 @@ class BybitFundingBot:
             if signal and signal_strength > 0.5:  # Только сильные сигналы
                 qty = self.calculate_scalp_qty(symbol, self.SCALP_POSITION_SIZE)
                 if not qty:
+                    logger.debug(f"📊 {symbol}: Не удалось рассчитать qty")
                     continue
 
                 order_id = await self.place_scalp_order(symbol, signal, qty, price)
@@ -593,10 +752,19 @@ class BybitFundingBot:
                         "low_watermark": price,
                         "rsi_at_open": rsi
                     }
+                    logger.info(f"✅ {symbol}: Скальп позиция открыта ({signal})")
+                else:
+                    logger.warning(f"⚠️  {symbol}: Не удалось открыть скальп позицию")
+
                 await asyncio.sleep(2)  # Пауза между ордерами
 
     async def _manage_scalp_position(self, symbol: str):
-        """Управление скальп позицией"""
+        """Управление скальп позицией с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.warning(f"⚠️  {symbol}: Символ недоступен, закрываем позицию")
+            await self._close_scalp_position(symbol)
+            return
+
         if symbol not in self.active_scalp_positions:
             return
 
@@ -651,7 +819,7 @@ class BybitFundingBot:
             logger.info(f"📊 {symbol}: Закрытие по {close_reason}")
             await self._close_scalp_position(symbol)
 
-    # ========== FUNDING ARBITRAGE METHODS (оставшиеся без изменений) ==========
+    # ========== FUNDING ARBITRAGE METHODS (остальные без изменений) ==========
     def calculate_qty(self, position_size: float, price: float, min_order_qty: float, qty_precision: int) -> float:
         """Расчет количества с учетом ограничений"""
         if price <= 0:
@@ -665,7 +833,11 @@ class BybitFundingBot:
     async def place_spot_order(self, symbol: str, side: str, qty: float,
                               min_order_qty: float, qty_precision: int,
                               min_order_amt: float, spot_price: float) -> Optional[str]:
-        """Размещение спотового ордера"""
+        """Размещение спотового ордера с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "spot"):
+            logger.error(f"❌ {symbol}: Символ недоступен для спота")
+            return None
+
         try:
             order_value = qty * spot_price
             if qty < min_order_qty:
@@ -706,7 +878,11 @@ class BybitFundingBot:
     async def place_perp_order(self, symbol: str, side: str, qty: float,
                               min_order_qty: float, qty_precision: int,
                               perp_price: float) -> Optional[str]:
-        """Размещение перпетуального ордера"""
+        """Размещение перпетуального ордера с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.error(f"❌ {symbol}: Символ недоступен для перпетуала")
+            return None
+
         try:
             if qty < min_order_qty:
                 logger.error(f"❌ {symbol} Perp: qty {qty} < min {min_order_qty}")
@@ -728,6 +904,16 @@ class BybitFundingBot:
             if response.get("retCode") != 0:
                 error_msg = f"❌ {symbol} Perp {self.ORDER_TYPE} ошибка: {response.get('retMsg')} (Code: {response.get('retCode')})"
                 logger.error(error_msg)
+
+                # Специальная обработка ошибки 10001
+                if "10001" in str(response.get('retCode')):
+                    logger.error(f"🚫 {symbol}: Символ недоступен для перпетуала, удаляем из кэша")
+                    self.symbol_info_cache[symbol] = {
+                        "linear": False,
+                        "spot": self.is_symbol_valid(symbol, "spot"),
+                        "last_check": time.time()
+                    }
+
                 await self.send_telegram_message(error_msg)
                 return None
 
@@ -747,6 +933,10 @@ class BybitFundingBot:
 
     async def _set_perp_stop_loss(self, symbol: str, side: str, qty: float, entry_price: float):
         """Установка стоп-лосса для перпетуальной позиции"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.warning(f"⚠️  {symbol}: Не удалось установить стоп-лосс (символ недоступен)")
+            return
+
         try:
             if side == "Sell":  # Short позиция (мы продаем перпетуал)
                 stop_price = entry_price * (1 + self.STOP_LOSS_PERCENT)  # Закрытие при росте цены
@@ -780,7 +970,11 @@ class BybitFundingBot:
             logger.error(f"❌ {symbol} Ошибка stop-loss: {e}")
 
     async def _close_position(self, symbol: str) -> bool:
-        """Закрытие арбитражной позиции"""
+        """Закрытие арбитражной позиции с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.warning(f"⚠️  {symbol}: Символ недоступен, пропускаем закрытие арбитража")
+            return False
+
         try:
             if symbol not in self.active_positions:
                 logger.info(f"ℹ️  {symbol}: Позиция не найдена для закрытия")
@@ -793,7 +987,7 @@ class BybitFundingBot:
             success = True
 
             # Закрытие спотовой позиции
-            if "spot_order_id" in position:
+            if "spot_order_id" in position and self.is_symbol_valid(symbol, "spot"):
                 try:
                     # Для спота используем market sell
                     spot_close = self.session.place_order(
@@ -829,7 +1023,8 @@ class BybitFundingBot:
                     success = False
 
             # Удаление из активных позиций
-            del self.active_positions[symbol]
+            if symbol in self.active_positions:
+                del self.active_positions[symbol]
 
             reason = "по расписанию" if duration > 24 else "funding rate"
             message = (
@@ -847,7 +1042,11 @@ class BybitFundingBot:
             return False
 
     async def check_existing_positions(self, symbol: str) -> bool:
-        """Проверка существующих позиций"""
+        """Проверка существующих позиций с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear"):
+            logger.warning(f"⚠️  {symbol}: Символ недоступен, пропускаем проверку")
+            return False
+
         try:
             # Проверка перпетуальной позиции
             positions = self.session.get_positions(category="linear", symbol=symbol)
@@ -862,12 +1061,13 @@ class BybitFundingBot:
                     return True
 
             # Проверка открытых ордеров на споте
-            spot_orders = self.session.get_order_history(category="spot", symbol=symbol, limit=10)
-            if spot_orders.get("retCode") == 0:
-                for order in spot_orders["result"]["list"]:
-                    if order["orderStatus"] in ["New", "PartiallyFilled"]:
-                        logger.info(f"ℹ️  {symbol}: Открытый спотовый ордер {order['orderId']}, пропускаем")
-                        return True
+            if self.is_symbol_valid(symbol, "spot"):
+                spot_orders = self.session.get_order_history(category="spot", symbol=symbol, limit=10)
+                if spot_orders.get("retCode") == 0:
+                    for order in spot_orders["result"]["list"]:
+                        if order["orderStatus"] in ["New", "PartiallyFilled"]:
+                            logger.info(f"ℹ️  {symbol}: Открытый спотовый ордер {order['orderId']}, пропускаем")
+                            return True
 
             return False
         except Exception as e:
@@ -875,7 +1075,11 @@ class BybitFundingBot:
             return False
 
     async def open_arbitrage_position(self, symbol: str) -> bool:
-        """Открытие арбитражной позиции"""
+        """Открытие арбитражной позиции с проверкой валидности"""
+        if not self.is_symbol_valid(symbol, "linear") or not self.is_symbol_valid(symbol, "spot"):
+            logger.error(f"❌ {symbol}: Символ недоступен для арбитража")
+            return False
+
         try:
             logger.info(f"🎯 {symbol}: Попытка открытия арбитражной позиции")
 
@@ -937,8 +1141,9 @@ class BybitFundingBot:
                 logger.error(f"❌ {symbol}: Не удалось разместить перпетуальный ордер")
                 # Откатываем спотовый ордер
                 try:
-                    self.session.cancel_order(category="spot", symbol=symbol, orderId=spot_order_id)
-                    logger.info(f"🔄 {symbol}: Спотовый ордер отменен")
+                    if self.is_symbol_valid(symbol, "spot"):
+                        self.session.cancel_order(category="spot", symbol=symbol, orderId=spot_order_id)
+                        logger.info(f"🔄 {symbol}: Спотовый ордер отменен")
                 except Exception as e:
                     logger.error(f"❌ {symbol}: Ошибка отмены спотового ордера: {e}")
                 return False
@@ -973,9 +1178,14 @@ class BybitFundingBot:
             return False
 
     async def monitor_positions(self):
-        """Мониторинг активных позиций (funding)"""
+        """Мониторинг активных позиций (funding) с проверкой валидности"""
         try:
             for symbol in list(self.active_positions.keys()):
+                if not self.is_symbol_valid(symbol, "linear"):
+                    logger.warning(f"⚠️  {symbol}: Символ недоступен, закрываем арбитраж")
+                    await self._close_position(symbol)
+                    continue
+
                 position = self.active_positions[symbol]
                 open_time = position["open_time"]
                 duration = (datetime.now() - open_time).total_seconds() / 3600  # в часах
@@ -1039,7 +1249,7 @@ class BybitFundingBot:
             logger.error(f"❌ Ошибка проверки баланса: {e}")
 
     async def main_loop(self):
-        """Основной цикл бота"""
+        """Основной цикл бота с улучшенной обработкой ошибок"""
         logger.info("🔄 Запуск основного цикла...")
         consecutive_errors = 0
         max_consecutive_errors = 5
@@ -1057,7 +1267,8 @@ class BybitFundingBot:
                     await self.monitor_positions()
 
                     # Проверка новых возможностей
-                    for symbol in self.SYMBOLS:
+                    valid_symbols = [s for s in self.SYMBOLS if self.is_symbol_valid(s, "linear")]
+                    for symbol in valid_symbols:
                         if symbol in self.active_positions and len(self.active_positions) >= self.MAX_POSITIONS_PER_SYMBOL * len(self.SYMBOLS):
                             continue
 
@@ -1132,11 +1343,13 @@ class BybitFundingBot:
 
             # Формируем сообщение запуска
             balance_display = f"{available:.2f}" if available is not None else "N/A"
+            valid_scalp_count = len([s for s in self.SCALP_SYMBOLS if self.is_symbol_valid(s, "linear")])
+            valid_funding_count = len([s for s in self.SYMBOLS if self.is_symbol_valid(s, "linear")])
 
             if self.BOT_MODE == "funding":
                 mode_info = [
                     f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
-                    f"📈 <b>Пары</b>: {', '.join(self.SYMBOLS)}",
+                    f"📈 <b>Пары</b>: {valid_funding_count}/{len(self.SYMBOLS)} доступны",
                     f"💼 <b>Размер</b>: {self.POSITION_SIZE} USDT",
                     f"📊 <b>Порог</b>: {self.FUNDING_RATE_THRESHOLD}%",
                     f"🔄 <b>Интервал</b>: {self.CHECK_INTERVAL//60} мин",
@@ -1145,7 +1358,7 @@ class BybitFundingBot:
             else:
                 mode_info = [
                     f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
-                    f"📈 <b>Пары</b>: {', '.join(self.SCALP_SYMBOLS)}",
+                    f"📈 <b>Пары</b>: {valid_scalp_count}/{len(self.SCALP_SYMBOLS)} доступны",
                     f"⚡ <b>Размер</b>: {self.SCALP_POSITION_SIZE} USDT",
                     f"📊 <b>RSI</b>: {self.SCALP_RSI_OVERSOLD}-{self.SCALP_RSI_OVERBOUGHT}",
                     f"🎯 <b>Тейк-профит</b>: {self.SCALP_PROFIT_TARGET*100}%",
@@ -1154,8 +1367,8 @@ class BybitFundingBot:
                 ]
 
             message_parts = [
-                f"🤖 <b>Bybit {mode_info[0].split(':')[0]} Bot v2.1</b> запущен!",
-            ] + mode_info[1:]
+                f"🤖 <b>Bybit {mode_name} Bot v2.2</b> запущен!",
+            ] + mode_info
 
             startup_message = "\n".join(message_parts)
             await self.send_telegram_message(startup_message, parse_mode="HTML")
