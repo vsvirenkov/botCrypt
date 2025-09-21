@@ -53,7 +53,7 @@ class BybitFundingBot:
         self.SCALP_TIMEOUT_MINUTES = 10  # Закрывать позицию через 10 минут
 
         # Режим работы
-        self.BOT_MODE = "scalping"  # "funding" или "scalping"
+        self.BOT_MODE = "funding"  # "funding" или "scalping"
 
         # Telegram настройки
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
