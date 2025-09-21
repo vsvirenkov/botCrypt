@@ -1,3 +1,4 @@
 /dist
 *.log
 .env
+forTest.py
