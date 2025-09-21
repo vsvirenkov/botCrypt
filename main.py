@@ -1346,6 +1346,9 @@ class BybitFundingBot:
             valid_scalp_count = len([s for s in self.SCALP_SYMBOLS if self.is_symbol_valid(s, "linear")])
             valid_funding_count = len([s for s in self.SYMBOLS if self.is_symbol_valid(s, "linear")])
 
+            # ИСПРАВЛЕНО: Определяем mode_name здесь
+            mode_name = "Funding Arbitrage" if self.BOT_MODE == "funding" else "Scalping"
+
             if self.BOT_MODE == "funding":
                 mode_info = [
                     f"💰 <b>Баланс</b>: {balance_display} {self.STABLE}",
