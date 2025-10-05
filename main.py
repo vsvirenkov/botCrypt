@@ -265,7 +265,7 @@ class BybitFundingBot:
 
     # 🆕 НОВЫЙ МЕТОД: Установка Stop Loss и Take Profit
     async def _set_scalp_risk_management(self, symbol: str, side: str, qty: float, entry_price: float) -> bool:
-        """УСТАНОВКА STOP LOSS И TAKE PROFIT ДЛЯ СКАЛЬП ПОЗИЦИИ"""
+        """Установка Stop Loss и Take Profit для скальп позиции"""
         logger.info(f"🛡️ УСТАНОВКА РИСК-МАНАДЖМЕНТА: {symbol} {side}")
 
         try:
@@ -274,16 +274,30 @@ class BybitFundingBot:
                 # LONG позиция
                 stop_price = entry_price * (1 - self.SCALP_STOP_LOSS)      # 1% ниже входа
                 take_profit_price = entry_price * (1 + self.SCALP_PROFIT_TARGET)  # 0.3% выше входа
-                stop_side = "Sell"  # Закрываем long продажей
+                stop_side = "Sell"  # Закрываем LONG продажей
                 tp_side = "Sell"
+                stop_trigger_direction = 2  # Цена падает до или ниже triggerPrice
+                tp_trigger_direction = 1    # Цена растет до или выше triggerPrice
             else:
                 # SHORT позиция
                 stop_price = entry_price * (1 + self.SCALP_STOP_LOSS)      # 1% выше входа
                 take_profit_price = entry_price * (1 - self.SCALP_PROFIT_TARGET)  # 0.3% ниже входа
-                stop_side = "Buy"   # Закрываем short покупкой
+                stop_side = "Buy"   # Закрываем SHORT покупкой
                 tp_side = "Buy"
+                stop_trigger_direction = 1  # Цена растет до или выше triggerPrice
+                tp_trigger_direction = 2    # Цена падает до или ниже triggerPrice
 
             logger.info(f"📊 {symbol} | Вход: ${entry_price:,.4f} | SL: ${stop_price:,.4f} | TP: ${take_profit_price:,.4f}")
+
+            # Получаем информацию о символе для точности цены
+            instrument_info = self.get_instrument_info("linear", symbol)
+            if not instrument_info:
+                logger.error(f"❌ Ошибка получения информации о {symbol}")
+                return False
+
+            price_precision = instrument_info.get("qtyPrecision", 4)
+            stop_price = round(stop_price, price_precision)
+            take_profit_price = round(take_profit_price, price_precision)
 
             # === STOP LOSS ORDER ===
             stop_params = {
@@ -292,20 +306,21 @@ class BybitFundingBot:
                 "side": stop_side,
                 "orderType": "Market",
                 "qty": str(qty),
-                "triggerPrice": str(round(stop_price, 4)),
+                "triggerPrice": str(stop_price),
                 "triggerBy": "LastPrice",
                 "orderLinkId": f"{symbol}_SL_{int(time.time())}",
-                "triggerDirection": 0 if side == "Buy" else 1,  # 0=trigger when LastPrice >= triggerPrice, 1=<=
+                "triggerDirection": stop_trigger_direction,  # Исправлено!
                 "timeInForce": "GTC"
             }
 
+            logger.info(f"🛑 РАЗМЕЩАЕМ STOP LOSS: {symbol} {stop_side} | ${stop_price:,.4f}")
             stop_response = self.session.place_order(**stop_params)
             if stop_response.get("retCode") == 0:
                 stop_order_id = stop_response["result"]["orderId"]
                 self.stop_loss_orders[symbol] = stop_order_id
-                logger.info(f"🛑 STOP LOSS # {stop_order_id} | {symbol} {stop_side} | ${stop_price:,.4f}")
+                logger.info(f"🛑 STOP LOSS #{stop_order_id} | {symbol} {stop_side} | ${stop_price:,.4f}")
             else:
-                logger.error(f"❌ STOP LOSS ОШИБКА {symbol}: {stop_response.get('retMsg')}")
+                logger.error(f"❌ STOP LOSS ОШИБКА {symbol}: {stop_response.get('retMsg')} (#{stop_response.get('retCode')})")
                 return False
 
             # === TAKE PROFIT ORDER ===
@@ -315,20 +330,21 @@ class BybitFundingBot:
                 "side": tp_side,
                 "orderType": "Market",
                 "qty": str(qty),
-                "triggerPrice": str(round(take_profit_price, 4)),
+                "triggerPrice": str(take_profit_price),
                 "triggerBy": "LastPrice",
                 "orderLinkId": f"{symbol}_TP_{int(time.time())}",
-                "triggerDirection": 1 if side == "Buy" else 0,  # 1=trigger when LastPrice >= triggerPrice, 0=<=
+                "triggerDirection": tp_trigger_direction,  # Исправлено!
                 "timeInForce": "GTC"
             }
 
+            logger.info(f"🎯 РАЗМЕЩАЕМ TAKE PROFIT: {symbol} {tp_side} | ${take_profit_price:,.4f}")
             tp_response = self.session.place_order(**tp_params)
             if tp_response.get("retCode") == 0:
                 tp_order_id = tp_response["result"]["orderId"]
                 self.take_profit_orders[symbol] = tp_order_id
-                logger.info(f"🎯 TAKE PROFIT # {tp_order_id} | {symbol} {tp_side} | ${take_profit_price:,.4f}")
+                logger.info(f"🎯 TAKE PROFIT #{tp_order_id} | {symbol} {tp_side} | ${take_profit_price:,.4f}")
             else:
-                logger.error(f"❌ TAKE PROFIT ОШИБКА {symbol}: {tp_response.get('retMsg')}")
+                logger.error(f"❌ TAKE PROFIT ОШИБКА {symbol}: {tp_response.get('retMsg')} (#{tp_response.get('retCode')})")
                 return False
 
             # Уведомление
