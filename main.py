@@ -52,7 +52,7 @@ class BybitFundingBot:
         self.CLOSE_NEGATIVE_RATE = True
 
         # Конфигурация - Scalping с STOP LOSS
-        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT"]
+        self.SCALP_SYMBOLS = ["ETHUSDT", "BNBUSDT", "BTCUSDT", "SOLUSDT"]
         self.SCALP_POSITION_SIZE = 10.0
         self.SCALP_CHECK_INTERVAL = 30
         self.SCALP_PROFIT_TARGET = 0.003  # 0.3% тейк-профит
@@ -63,7 +63,7 @@ class BybitFundingBot:
         self.SCALP_RSI_OVERBOUGHT = 70
         self.SCALP_VOLUME_MULTIPLIER = 1.5
         self.SCALP_MAX_POSITIONS = 3
-        self.SCALP_TIMEOUT_MINUTES = 10
+        self.SCALP_TIMEOUT_MINUTES = 600
 
         # Мониторинг
         self.SCALP_STATUS_INTERVAL = 300
