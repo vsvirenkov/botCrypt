@@ -63,7 +63,7 @@ class BybitFundingBot:
         self.SCALP_RSI_OVERBOUGHT = 70
         self.SCALP_VOLUME_MULTIPLIER = 1.5
         self.SCALP_MAX_POSITIONS = 3
-        self.SCALP_TIMEOUT_MINUTES = 600
+        self.SCALP_TIMEOUT_MINUTES = 1200
 
         # Мониторинг
         self.SCALP_STATUS_INTERVAL = 300
