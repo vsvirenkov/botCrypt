@@ -41,9 +41,9 @@ class BybitFundingBot:
         logger.info("🔧 === ИНИЦИАЛИЗАЦИЯ BybitFundingBot ===")
 
         # Конфигурация - Funding Arbitrage
-        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT"]
+        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "SOLUSDT"]
         self.STABLE = "USDT"
-        self.POSITION_SIZE = 2.0
+        self.POSITION_SIZE = 5.0
         self.CHECK_INTERVAL = 1800
         self.FUNDING_RATE_THRESHOLD = 0.02
         self.MAX_POSITIONS_PER_SYMBOL = 1
@@ -52,18 +52,18 @@ class BybitFundingBot:
         self.CLOSE_NEGATIVE_RATE = True
 
         # Конфигурация - Scalping с STOP LOSS
-        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT"]
-        self.SCALP_POSITION_SIZE = 2.0
+        self.SCALP_SYMBOLS = ["ETHUSDT", "BNBEUSDT", "BTCUSDT", "SOLUSDT"]
+        self.SCALP_POSITION_SIZE = 5.0
         self.SCALP_CHECK_INTERVAL = 30
         self.SCALP_PROFIT_TARGET = 0.003  # 0.3% тейк-профит
-        self.SCALP_STOP_LOSS = 0.01      # 1% стоп-лосс для скальпа (более агрессивный)
+        self.SCALP_STOP_LOSS = 0.01      # 1% стоп-лосс
         self.SCALP_TRAILING_STOP = 0.001 # 0.1% trailing stop
         self.SCALP_RSI_PERIOD = 14
         self.SCALP_RSI_OVERSOLD = 30
         self.SCALP_RSI_OVERBOUGHT = 70
         self.SCALP_VOLUME_MULTIPLIER = 1.5
         self.SCALP_MAX_POSITIONS = 3
-        self.SCALP_TIMEOUT_MINUTES = 10
+        self.SCALP_TIMEOUT_MINUTES = 300
 
         # Мониторинг
         self.SCALP_STATUS_INTERVAL = 300
@@ -126,8 +126,8 @@ class BybitFundingBot:
         self.rsi_cache = {}
         self.symbol_info_cache = {}
         self.balance_cache = {}
-        self.stop_loss_orders = {}  # 🆕 Хранение ID стоп-лосс ордеров
-        self.take_profit_orders = {}  # 🆕 Хранение ID тейк-профит ордеров
+        self.stop_loss_orders = {}
+        self.take_profit_orders = {}
         self.running = True
         self.last_scalp_check = 0
         self.last_status_update = 0
@@ -263,452 +263,6 @@ class BybitFundingBot:
         self.balance_cache[cache_key] = 0.0
         return 0.0
 
-    # 🆕 НОВЫЙ МЕТОД: Установка Stop Loss и Take Profit
-    async def _set_scalp_risk_management(self, symbol: str, side: str, qty: float, entry_price: float) -> bool:
-        """УСТАНОВКА STOP LOSS И TAKE PROFIT ДЛЯ СКАЛЬП ПОЗИЦИИ"""
-        logger.info(f"🛡️ УСТАНОВКА РИСК-МАНАДЖМЕНТА: {symbol} {side}")
-
-        try:
-            # Рассчитываем цены
-            if side == "Buy":
-                # LONG позиция
-                stop_price = entry_price * (1 - self.SCALP_STOP_LOSS)      # 1% ниже входа
-                take_profit_price = entry_price * (1 + self.SCALP_PROFIT_TARGET)  # 0.3% выше входа
-                stop_side = "Sell"  # Закрываем long продажей
-                tp_side = "Sell"
-            else:
-                # SHORT позиция
-                stop_price = entry_price * (1 + self.SCALP_STOP_LOSS)      # 1% выше входа
-                take_profit_price = entry_price * (1 - self.SCALP_PROFIT_TARGET)  # 0.3% ниже входа
-                stop_side = "Buy"   # Закрываем short покупкой
-                tp_side = "Buy"
-
-            logger.info(f"📊 {symbol} | Вход: ${entry_price:,.4f} | SL: ${stop_price:,.4f} | TP: ${take_profit_price:,.4f}")
-
-            # === STOP LOSS ORDER ===
-            stop_params = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": stop_side,
-                "orderType": "Market",
-                "qty": str(qty),
-                "triggerPrice": str(round(stop_price, 4)),
-                "triggerBy": "LastPrice",
-                "orderLinkId": f"{symbol}_SL_{int(time.time())}",
-                "triggerDirection": 0 if side == "Buy" else 1,  # 0=trigger when LastPrice >= triggerPrice, 1=<=
-                "timeInForce": "GTC"
-            }
-
-            stop_response = self.session.place_order(**stop_params)
-            if stop_response.get("retCode") == 0:
-                stop_order_id = stop_response["result"]["orderId"]
-                self.stop_loss_orders[symbol] = stop_order_id
-                logger.info(f"🛑 STOP LOSS # {stop_order_id} | {symbol} {stop_side} | ${stop_price:,.4f}")
-            else:
-                logger.error(f"❌ STOP LOSS ОШИБКА {symbol}: {stop_response.get('retMsg')}")
-                return False
-
-            # === TAKE PROFIT ORDER ===
-            tp_params = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": tp_side,
-                "orderType": "Market",
-                "qty": str(qty),
-                "triggerPrice": str(round(take_profit_price, 4)),
-                "triggerBy": "LastPrice",
-                "orderLinkId": f"{symbol}_TP_{int(time.time())}",
-                "triggerDirection": 1 if side == "Buy" else 0,  # 1=trigger when LastPrice >= triggerPrice, 0=<=
-                "timeInForce": "GTC"
-            }
-
-            tp_response = self.session.place_order(**tp_params)
-            if tp_response.get("retCode") == 0:
-                tp_order_id = tp_response["result"]["orderId"]
-                self.take_profit_orders[symbol] = tp_order_id
-                logger.info(f"🎯 TAKE PROFIT # {tp_order_id} | {symbol} {tp_side} | ${take_profit_price:,.4f}")
-            else:
-                logger.error(f"❌ TAKE PROFIT ОШИБКА {symbol}: {tp_response.get('retMsg')}")
-                return False
-
-            # Уведомление
-            risk_msg = (
-                f"🛡️ <b>РИСК-МАНАДЖМЕНТ {symbol}</b>\n\n"
-                f"📈 <b>Вход</b>: <code>${entry_price:,.4f}</code>\n"
-                f"🛑 <b>Stop Loss</b>: <code>${stop_price:,.4f}</code> (-{self.SCALP_STOP_LOSS*100:.1f}%)\n"
-                f"🎯 <b>Take Profit</b>: <code>${take_profit_price:,.4f}</code> (+{self.SCALP_PROFIT_TARGET*100:.1f}%)\n"
-                f"⚖️  <b>R:R</b>: 1:{self.SCALP_PROFIT_TARGET/self.SCALP_STOP_LOSS:.1f}"
-            )
-            await self.send_telegram_message(risk_msg, parse_mode="HTML")
-
-            logger.info(f"✅ РИСК-МАНАДЖМЕНТ УСТАНОВЛЕН: {symbol}")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ ОШИБКА РИСК-МАНАДЖМЕНТА {symbol}: {e}")
-            await self.send_telegram_message(f"❌ ОШИБКА SL/TP {symbol}: {e}")
-            return False
-
-    # 🆕 НОВЫЙ МЕТОД: Отмена стоп-лосс ордеров при закрытии
-    async def _cancel_risk_orders(self, symbol: str):
-        """ОТМЕНА STOP LOSS И TAKE PROFIT ПРИ ЗАКРЫТИИ ПОЗИЦИИ"""
-        try:
-            # Отмена Stop Loss
-            if symbol in self.stop_loss_orders:
-                stop_id = self.stop_loss_orders[symbol]
-                try:
-                    cancel_response = self.session.cancel_order(
-                        category="linear",
-                        symbol=symbol,
-                        orderId=stop_id
-                    )
-                    if cancel_response.get("retCode") == 0:
-                        logger.info(f"🗑️  STOP LOSS ОТМЕНЕН: {symbol} #{stop_id}")
-                    else:
-                        logger.warning(f"⚠️  ОШИБКА ОТМЕНЫ SL {symbol}: {cancel_response.get('retMsg')}")
-                except Exception as e:
-                    logger.warning(f"⚠️  ИСКЛЮЧЕНИЕ ОТМЕНЫ SL {symbol}: {e}")
-                del self.stop_loss_orders[symbol]
-
-            # Отмена Take Profit
-            if symbol in self.take_profit_orders:
-                tp_id = self.take_profit_orders[symbol]
-                try:
-                    cancel_response = self.session.cancel_order(
-                        category="linear",
-                        symbol=symbol,
-                        orderId=tp_id
-                    )
-                    if cancel_response.get("retCode") == 0:
-                        logger.info(f"🗑️  TAKE PROFIT ОТМЕНЕН: {symbol} #{tp_id}")
-                    else:
-                        logger.warning(f"⚠️  ОШИБКА ОТМЕНЫ TP {symbol}: {cancel_response.get('retMsg')}")
-                except Exception as e:
-                    logger.warning(f"⚠️  ИСКЛЮЧЕНИЕ ОТМЕНЫ TP {symbol}: {e}")
-                del self.take_profit_orders[symbol]
-
-        except Exception as e:
-            logger.error(f"❌ ОШИБКА ОТМЕНЫ ОРДЕРОВ {symbol}: {e}")
-
-    async def place_scalp_order(self, symbol: str, side: str, qty: float, price: float) -> Optional[str]:
-        """РАЗМЕЩЕНИЕ СКАЛЬП ОРДЕРА С STOP LOSS"""
-        try:
-            order_params = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": side,
-                "orderType": "Market",
-                "qty": str(qty)
-            }
-
-            logger.info(f"🚀 ОРДЕР: {symbol} {side} | {qty:.6f} @ ${price:,.4f}")
-
-            # Размещение основного ордера
-            response = self.session.place_order(**order_params)
-
-            if response.get("retCode") != 0:
-                error_msg = f"❌ {symbol} ОШИБКА: {response.get('retMsg')} (#{response.get('retCode')})"
-                logger.error(error_msg)
-                await self.send_telegram_message(error_msg)
-                return None
-
-            order_id = response["result"]["orderId"]
-            self.successful_signals += 1
-
-            logger.info(f"✅ ОСНОВНОЙ ОРДЕР #{order_id} | {symbol} {side}")
-
-            # 🆕 УСТАНОВКА STOP LOSS И TAKE PROFIT
-            risk_success = await self._set_scalp_risk_management(symbol, side, qty, price)
-            if not risk_success:
-                logger.error(f"❌ ОШИБКА РИСК-МАНАДЖМЕНТА {symbol} - ОСТАНАВЛИВАЕМ ПОЗИЦИЮ")
-                # Откатываем основной ордер
-                try:
-                    self.session.close_position(category="linear", symbol=symbol)
-                    logger.info(f"🔄 ОТКАТ ПОЗИЦИИ {symbol}")
-                except Exception as e:
-                    logger.error(f"❌ ОШИБКА ОТКАТА {symbol}: {e}")
-                return None
-
-            # Сохранение позиции
-            self.active_scalp_positions[symbol] = {
-                "order_id": order_id,
-                "side": side,
-                "qty": qty,
-                "entry_price": price,
-                "open_time": datetime.now(),
-                "high_watermark": price,
-                "low_watermark": price,
-                "rsi_at_open": self.get_rsi(symbol),
-                "stop_loss_set": True
-            }
-
-            # Уведомление об открытии
-            message = (
-                f"⚡ <b>{symbol}</b> {side} ОТКРЫТА!\n\n"
-                f"💰 <code>{qty:.6f}</code> @ <code>${price:,.4f}</code>\n"
-                f"📊 Размер: <b>{self.SCALP_POSITION_SIZE} USDT</b>\n"
-                f"🛡️ <b>SL:</b> -{self.SCALP_STOP_LOSS*100:.1f}%\n"
-                f"🎯 <b>TP:</b> +{self.SCALP_PROFIT_TARGET*100:.1f}%\n"
-                f"⏰ <code>{datetime.now().strftime('%H:%M:%S')}</code>"
-            )
-            await self.send_telegram_message(message, parse_mode="HTML")
-
-            logger.info(f"✅ ✅ ПОЗИЦИЯ С РИСКАМИ ОТКРЫТА: {symbol}")
-            return order_id
-
-        except Exception as e:
-            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА {symbol}: {e}")
-            await self.send_telegram_message(f"💥 ОШИБКА ОТКРЫТИЯ {symbol}: {e}")
-            return None
-
-    async def _close_scalp_position(self, symbol: str, close_reason: str = "Manual") -> bool:
-        """ЗАКРЫТИЕ СКАЛЬП ПОЗИЦИИ С ОТМЕНОЙ РИСК-ОРДЕРОВ"""
-        try:
-            if symbol not in self.active_scalp_positions:
-                logger.info(f"ℹ️  {symbol}: Позиция не найдена")
-                return True
-
-            logger.info(f"🔒 ЗАКРЫТИЕ ПОЗИЦИИ: {symbol} | Причина: {close_reason}")
-
-            # 🆕 ОТМЕНА РИСК-ОРДЕРОВ ПЕРЕД ЗАКРЫТИЕМ
-            await self._cancel_risk_orders(symbol)
-
-            # Закрытие основной позиции
-            position = self.active_scalp_positions[symbol]
-            close_response = self.session.close_position(category="linear", symbol=symbol)
-
-            if close_response.get("retCode") == 0:
-                # Расчет P&L
-                entry_price = position["entry_price"]
-                exit_price = self.get_current_price(symbol)
-
-                if exit_price and entry_price:
-                    side = position["side"]
-                    if side == "Buy":
-                        pnl_percent = (exit_price - entry_price) / entry_price * 100
-                    else:
-                        pnl_percent = (entry_price - exit_price) / entry_price * 100
-
-                    pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
-                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
-
-                    status_emoji = "🟢 ПРИБЫЛЬ" if pnl_usd > 0 else "🔴 УБЫТОК"
-                    profit_color = "🟢" if pnl_usd > 0 else "🔴"
-
-                    message = (
-                        f"🔒 <b>{symbol}</b> {position['side']} ЗАКРЫТА\n\n"
-                        f"⏱️  <b>Длительность:</b> {duration:.1f} мин\n"
-                        f"{profit_color} <b>P&L:</b> {pnl_usd:+.3f} USDT\n"
-                        f"📊 <b>{pnl_percent:+.2f}%</b>\n"
-                        f"📝 <i>{close_reason}</i>\n"
-                        f"{status_emoji}"
-                    )
-                    await self.send_telegram_message(message, parse_mode="HTML")
-
-                    logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
-                else:
-                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
-                    message = f"🔒 <b>{symbol}</b> закрыта | ⏱️ {duration:.1f} мин | {close_reason}"
-                    await self.send_telegram_message(message, parse_mode="HTML")
-                    logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
-
-                # Удаление из активных позиций
-                del self.active_scalp_positions[symbol]
-                return True
-            else:
-                logger.error(f"❌ ОШИБКА ЗАКРЫТИЯ {symbol}: {close_response.get('retMsg')}")
-                return False
-
-        except Exception as e:
-            logger.error(f"❌ ИСКЛЮЧЕНИЕ ЗАКРЫТИЯ {symbol}: {e}")
-            return False
-
-    async def _manage_scalp_position(self, symbol: str):
-        """УПРАВЛЕНИЕ СКАЛЬП ПОЗИЦИЕЙ (TRAILING STOP)"""
-        if symbol not in self.active_scalp_positions:
-            return
-
-        try:
-            position = self.active_scalp_positions[symbol]
-            current_price = self.get_current_price(symbol)
-            if not current_price:
-                return
-
-            entry_price = position["entry_price"]
-            side = position["side"]
-            duration = (datetime.now() - position["open_time"]).total_seconds() / 60
-
-            # Проверка таймаута
-            if duration > self.SCALP_TIMEOUT_MINUTES:
-                logger.info(f"⏰ ТАЙМАУТ {symbol}: {duration:.1f}м > {self.SCALP_TIMEOUT_MINUTES}м")
-                await self._close_scalp_position(symbol, "Timeout")
-                return
-
-            # Обновление водяных отметок
-            if side == "Buy":
-                position["high_watermark"] = max(position["high_watermark"], current_price)
-            else:
-                position["low_watermark"] = min(position["low_watermark"], current_price)
-
-            # TRAILING STOP ЛОГИКА
-            should_close = False
-            close_reason = ""
-
-            if side == "Buy":
-                # Trailing stop для LONG
-                if position["high_watermark"] > entry_price * (1 + self.SCALP_PROFIT_TARGET):
-                    # Активируем trailing после достижения тейк-профита
-                    trail_stop = position["high_watermark"] * (1 - self.SCALP_TRAILING_STOP)
-                    if current_price <= trail_stop:
-                        should_close = True
-                        close_reason = f"Trailing Stop {self.SCALP_TRAILING_STOP*100:.1f}%"
-            else:
-                # Trailing stop для SHORT
-                if position["low_watermark"] < entry_price * (1 - self.SCALP_PROFIT_TARGET):
-                    # Активируем trailing после достижения тейк-профита
-                    trail_stop = position["low_watermark"] * (1 + self.SCALP_TRAILING_STOP)
-                    if current_price >= trail_stop:
-                        should_close = True
-                        close_reason = f"Trailing Stop {self.SCALP_TRAILING_STOP*100:.1f}%"
-
-            if should_close:
-                logger.info(f"🎯 TRAILING STOP {symbol}: {close_reason}")
-                await self._close_scalp_position(symbol, close_reason)
-
-        except Exception as e:
-            logger.error(f"❌ ОШИБКА УПРАВЛЕНИЯ {symbol}: {e}")
-
-    async def check_scalp_signals(self):
-        """ГЛАВНАЯ ФУНКЦИЯ СКАЛЬПИНГА"""
-        if not self.running or self.BOT_MODE != "scalping":
-            return
-
-        current_time = time.time()
-        if current_time - self.last_scalp_check < self.SCALP_CHECK_INTERVAL:
-            return
-
-        self.signal_checks += 1
-        self.last_scalp_check = current_time
-
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        active_count = len(self.active_scalp_positions)
-
-        logger.info(f"🔍 === ПРОВЕРКА #{self.signal_checks} | {timestamp} | Активных: {active_count} ===")
-
-        # Проверка баланса
-        available = self.get_available_balance(self.STABLE)
-        balance_str = f"{available:.2f}" if available is not None else "N/A"
-        logger.info(f"💰 БАЛАНС: {balance_str} USDT")
-
-        if available is None or available < self.SCALP_POSITION_SIZE:
-            logger.warning(f"⚠️  БАЛАНС НИЗКИЙ: {balance_str}")
-            return
-
-        # Проверка лимита позиций
-        if active_count >= self.SCALP_MAX_POSITIONS:
-            logger.info(f"⚠️  ЛИМИТ ПОЗИЦИЙ: {active_count}/{self.SCALP_MAX_POSITIONS}")
-            # Управляем существующими позициями
-            for symbol in list(self.active_scalp_positions.keys()):
-                await self._manage_scalp_position(symbol)
-            return
-
-        # Проверка таймаутов существующих позиций
-        timeout_positions = []
-        for symbol, position in self.active_scalp_positions.items():
-            duration = (datetime.now() - position["open_time"]).total_seconds() / 60
-            if duration > self.SCALP_TIMEOUT_MINUTES:
-                timeout_positions.append(symbol)
-
-        for symbol in timeout_positions:
-            await self._close_scalp_position(symbol, "Timeout")
-
-        # Управление существующими позициями (trailing stop)
-        for symbol in list(self.active_scalp_positions.keys()):
-            await self._manage_scalp_position(symbol)
-
-        # Поиск новых сигналов
-        logger.info(f"📊 АНАЛИЗ ПАР: {', '.join(self.SCALP_SYMBOLS)}")
-        signals_found = 0
-
-        for i, symbol in enumerate(self.SCALP_SYMBOLS, 1):
-            if symbol in self.active_scalp_positions:
-                logger.info(f"  {i}. {symbol} - Уже в позиции")
-                continue
-
-            logger.info(f"  {i}. 📊 {symbol} - Анализ...")
-
-            if not self.is_symbol_valid(symbol, "linear"):
-                logger.info(f"  ❌ {symbol} - Недоступен")
-                continue
-
-            rsi = self.get_rsi(symbol)
-            if rsi is None:
-                logger.info(f"  ⏭️  {symbol} - Нет RSI")
-                continue
-
-            price = self.get_current_price(symbol)
-            if not price:
-                logger.info(f"  ⏭️  {symbol} - Нет цены")
-                continue
-
-            volume_info = self.get_volume_info(symbol)
-            volume_mult = volume_info["multiplier"] if volume_info else 0
-
-            logger.info(f"  📈 {symbol} | RSI: {rsi:.1f} | Vol: {volume_mult:.1f}x | ${price:,.4f}")
-
-            signal = None
-            signal_strength = 0
-
-            if rsi < self.SCALP_RSI_OVERSOLD:
-                signal = "Buy"
-                signal_strength = (self.SCALP_RSI_OVERSOLD - rsi) / 10
-                signals_found += 1
-                logger.info(f"  🟢 СИГНАЛ {signal} | RSI: {rsi:.1f} | Сила: {signal_strength:.2f}")
-
-                if signal_strength >= 0.5 and volume_mult >= self.SCALP_VOLUME_MULTIPLIER:
-                    logger.info(f"  🎯 СИЛЬНЫЙ СИГНАЛ! Открываем {symbol}")
-                    qty = self.calculate_scalp_qty(symbol, self.SCALP_POSITION_SIZE)
-                    if qty:
-                        order_id = await self.place_scalp_order(symbol, signal, qty, price)
-                        if order_id:
-                            await asyncio.sleep(5)
-                            return
-                    else:
-                        logger.warning(f"  ⚠️  {symbol} - Ошибка расчета qty")
-                else:
-                    reason = "слабый сигнал" if signal_strength < 0.5 else "низкий объем"
-                    logger.info(f"  ⏳ {symbol} - {reason} (сила: {signal_strength:.2f}, vol: {volume_mult:.1f}x)")
-
-            elif rsi > self.SCALP_RSI_OVERBOUGHT:
-                signal = "Sell"
-                signal_strength = (rsi - self.SCALP_RSI_OVERBOUGHT) / 10
-                signals_found += 1
-                logger.info(f"  🔴 СИГНАЛ {signal} | RSI: {rsi:.1f} | Сила: {signal_strength:.2f}")
-
-                if signal_strength >= 0.5 and volume_mult >= self.SCALP_VOLUME_MULTIPLIER:
-                    logger.info(f"  🎯 СИЛЬНЫЙ СИГНАЛ! Открываем {symbol}")
-                    qty = self.calculate_scalp_qty(symbol, self.SCALP_POSITION_SIZE)
-                    if qty:
-                        order_id = await self.place_scalp_order(symbol, signal, qty, price)
-                        if order_id:
-                            await asyncio.sleep(5)
-                            return
-                else:
-                    reason = "слабый сигнал" if signal_strength < 0.5 else "низкий объем"
-                    logger.info(f"  ⏳ {symbol} - {reason} (сила: {signal_strength:.2f}, vol: {volume_mult:.1f}x)")
-
-            else:
-                logger.info(f"  ➡️  {symbol} - Норма (RSI {rsi:.1f})")
-
-        # Итоговый отчет
-        success_rate = (self.successful_signals / max(self.signal_checks, 1) * 100)
-        logger.info(f"📋 === ИТОГО #{self.signal_checks} ===")
-        logger.info(f"🎯 Сигналов: {signals_found} | Сделок: {self.successful_signals} | Успешность: {success_rate:.1f}%")
-        logger.info(f"🔒 Позиций: {len(self.active_scalp_positions)} | SL ордеров: {len(self.stop_loss_orders)}")
-        logger.info(f"⏰ Следующая проверка: +{self.SCALP_CHECK_INTERVAL}с")
-        logger.info("=" * 60)
-
-    # Остальные методы (funding) сокращены...
     def get_instrument_info(self, category: str, symbol: str) -> Optional[Dict]:
         if not self.is_symbol_valid(symbol, category):
             return None
@@ -719,13 +273,17 @@ class BybitFundingBot:
 
             instrument = response["result"]["list"][0]
             lot_size_filter = instrument.get("lotSizeFilter", {})
+            price_filter = instrument.get("priceFilter", {})
             min_order_qty = float(lot_size_filter.get("minOrderQty", "0.001"))
             qty_step = lot_size_filter.get("qtyStep", "0.0001")
             qty_precision = len(qty_step.split(".")[-1]) if "." in qty_step else 0
+            price_step = price_filter.get("tickSize", "0.01")
+            price_precision = len(price_step.split(".")[-1]) if "." in price_step else 0
 
             return {
                 "minOrderQty": min_order_qty,
                 "qtyPrecision": qty_precision,
+                "pricePrecision": price_precision,
                 "minOrderAmt": 10.0 if category == "spot" else 0.0
             }
         except Exception:
@@ -827,17 +385,465 @@ class BybitFundingBot:
         except Exception:
             return None
 
-    # Funding методы (сокращены)
-    def get_funding_rate(self, symbol: str) -> Optional[float]:
-        if not self.is_symbol_valid(symbol, "linear"):
-            return None
+    async def _set_scalp_risk_management(self, symbol: str, side: str, qty: float, entry_price: float) -> bool:
+        """Установка Stop Loss и Take Profit для скальп позиции"""
+        logger.info(f"🛡️ УСТАНОВКА РИСК-МАНАДЖМЕНТА: {symbol} {side}")
+
         try:
-            response = self.session.get_tickers(category="linear", symbol=symbol)
+            instrument_info = self.get_instrument_info("linear", symbol)
+            if not instrument_info:
+                logger.error(f"❌ Ошибка получения информации о {symbol}")
+                return False
+
+            price_precision = instrument_info.get("pricePrecision", 4)
+
+            if side == "Buy":
+                stop_price = entry_price * (1 - self.SCALP_STOP_LOSS)
+                take_profit_price = entry_price * (1 + self.SCALP_PROFIT_TARGET)
+                stop_side = "Sell"
+                tp_side = "Sell"
+                stop_trigger_direction = 2  # Цена падает до/ниже
+                tp_trigger_direction = 1    # Цена растет до/выше
+            else:
+                stop_price = entry_price * (1 + self.SCALP_STOP_LOSS)
+                take_profit_price = entry_price * (1 - self.SCALP_PROFIT_TARGET)
+                stop_side = "Buy"
+                tp_side = "Buy"
+                stop_trigger_direction = 1  # Цена растет до/выше
+                tp_trigger_direction = 2    # Цена падает до/ниже
+
+            stop_price = round(stop_price, price_precision)
+            take_profit_price = round(take_profit_price, price_precision)
+
+            logger.info(f"📊 {symbol} | Вход: ${entry_price:,.4f} | SL: ${stop_price:,.4f} | TP: ${take_profit_price:,.4f}")
+
+            # STOP LOSS ORDER
+            stop_params = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": stop_side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "triggerPrice": str(stop_price),
+                "triggerBy": "LastPrice",
+                "orderLinkId": f"{symbol}_SL_{int(time.time())}",
+                "triggerDirection": stop_trigger_direction,
+                "timeInForce": "GTC"
+            }
+
+            logger.info(f"🛑 РАЗМЕЩАЕМ STOP LOSS: {symbol} {stop_side} | ${stop_price:,.4f}")
+            stop_response = self.session.place_order(**stop_params)
+            if stop_response.get("retCode") == 0:
+                stop_order_id = stop_response["result"]["orderId"]
+                self.stop_loss_orders[symbol] = stop_order_id
+                logger.info(f"🛑 STOP LOSS #{stop_order_id} | {symbol} {stop_side} | ${stop_price:,.4f}")
+            else:
+                logger.error(f"❌ STOP LOSS ОШИБКА {symbol}: {stop_response.get('retMsg')} (#{stop_response.get('retCode')})")
+                return False
+
+            # TAKE PROFIT ORDER
+            tp_params = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": tp_side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "triggerPrice": str(take_profit_price),
+                "triggerBy": "LastPrice",
+                "orderLinkId": f"{symbol}_TP_{int(time.time())}",
+                "triggerDirection": tp_trigger_direction,
+                "timeInForce": "GTC"
+            }
+
+            logger.info(f"🎯 РАЗМЕЩАЕМ TAKE PROFIT: {symbol} {tp_side} | ${take_profit_price:,.4f}")
+            tp_response = self.session.place_order(**tp_params)
+            if tp_response.get("retCode") == 0:
+                tp_order_id = tp_response["result"]["orderId"]
+                self.take_profit_orders[symbol] = tp_order_id
+                logger.info(f"🎯 TAKE PROFIT #{tp_order_id} | {symbol} {tp_side} | ${take_profit_price:,.4f}")
+            else:
+                logger.error(f"❌ TAKE PROFIT ОШИБКА {symbol}: {tp_response.get('retMsg')} (#{tp_response.get('retCode')})")
+                return False
+
+            risk_msg = (
+                f"🛡️ <b>РИСК-МАНАДЖМЕНТ {symbol}</b>\n\n"
+                f"📈 <b>Вход</b>: <code>${entry_price:,.4f}</code>\n"
+                f"🛑 <b>Stop Loss</b>: <code>${stop_price:,.4f}</code> (-{self.SCALP_STOP_LOSS*100:.1f}%)\n"
+                f"🎯 <b>Take Profit</b>: <code>${take_profit_price:,.4f}</code> (+{self.SCALP_PROFIT_TARGET*100:.1f}%)\n"
+                f"⚖️  <b>R:R</b>: 1:{self.SCALP_PROFIT_TARGET/self.SCALP_STOP_LOSS:.1f}"
+            )
+            await self.send_telegram_message(risk_msg, parse_mode="HTML")
+
+            logger.info(f"✅ РИСК-МАНАДЖМЕНТ УСТАНОВЛЕН: {symbol}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ ОШИБКА РИСК-МАНАДЖМЕНТА {symbol}: {e}")
+            await self.send_telegram_message(f"❌ ОШИБКА SL/TP {symbol}: {e}")
+            return False
+
+    async def _cancel_risk_orders(self, symbol: str):
+        """Отмена Stop Loss и Take Profit ордеров"""
+        try:
+            if symbol in self.stop_loss_orders:
+                stop_id = self.stop_loss_orders[symbol]
+                try:
+                    cancel_response = self.session.cancel_order(
+                        category="linear",
+                        symbol=symbol,
+                        orderId=stop_id
+                    )
+                    if cancel_response.get("retCode") == 0:
+                        logger.info(f"🗑️ STOP LOSS ОТМЕНЕН: {symbol} #{stop_id}")
+                    else:
+                        logger.warning(f"⚠️ ОШИБКА ОТМЕНЫ SL {symbol}: {cancel_response.get('retMsg')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ ИСКЛЮЧЕНИЕ ОТМЕНЫ SL {symbol}: {e}")
+                del self.stop_loss_orders[symbol]
+
+            if symbol in self.take_profit_orders:
+                tp_id = self.take_profit_orders[symbol]
+                try:
+                    cancel_response = self.session.cancel_order(
+                        category="linear",
+                        symbol=symbol,
+                        orderId=tp_id
+                    )
+                    if cancel_response.get("retCode") == 0:
+                        logger.info(f"🗑️ TAKE PROFIT ОТМЕНЕН: {symbol} #{tp_id}")
+                    else:
+                        logger.warning(f"⚠️ ОШИБКА ОТМЕНЫ TP {symbol}: {cancel_response.get('retMsg')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ ИСКЛЮЧЕНИЕ ОТМЕНЫ TP {symbol}: {e}")
+                del self.take_profit_orders[symbol]
+
+        except Exception as e:
+            logger.error(f"❌ ОШИБКА ОТМЕНЫ ОРДЕРОВ {symbol}: {e}")
+
+    async def place_scalp_order(self, symbol: str, side: str, qty: float, price: float) -> Optional[str]:
+        """Размещение скальп ордера с Stop Loss и Take Profit"""
+        try:
+            order_params = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": side,
+                "orderType": "Market",
+                "qty": str(qty)
+            }
+
+            logger.info(f"🚀 ОРДЕР: {symbol} {side} | {qty:.6f} @ ${price:,.4f}")
+
+            response = self.session.place_order(**order_params)
+
             if response.get("retCode") != 0:
+                error_msg = f"❌ {symbol} ОШИБКА: {response.get('retMsg')} (#{response.get('retCode')})"
+                logger.error(error_msg)
+                await self.send_telegram_message(error_msg)
                 return None
-            return float(response["result"]["list"][0]["fundingRate"]) * 100
-        except Exception:
+
+            order_id = response["result"]["orderId"]
+            self.successful_signals += 1
+
+            logger.info(f"✅ ОСНОВНОЙ ОРДЕР #{order_id} | {symbol} {side}")
+
+            risk_success = await self._set_scalp_risk_management(symbol, side, qty, price)
+            if not risk_success:
+                logger.error(f"❌ ОШИБКА РИСК-МАНАДЖМЕНТА {symbol} - ОТКАТ ПОЗИЦИИ")
+                try:
+                    close_side = "Sell" if side == "Buy" else "Buy"
+                    close_params = {
+                        "category": "linear",
+                        "symbol": symbol,
+                        "side": close_side,
+                        "orderType": "Market",
+                        "qty": str(qty),
+                        "reduceOnly": True
+                    }
+                    self.session.place_order(**close_params)
+                    logger.info(f"🔄 ОТКАТ ПОЗИЦИИ {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ ОШИБКА ОТКАТА {symbol}: {e}")
+                return None
+
+            self.active_scalp_positions[symbol] = {
+                "order_id": order_id,
+                "side": side,
+                "qty": qty,
+                "entry_price": price,
+                "open_time": datetime.now(),
+                "high_watermark": price,
+                "low_watermark": price,
+                "rsi_at_open": self.get_rsi(symbol),
+                "stop_loss_set": True
+            }
+
+            message = (
+                f"⚡ <b>{symbol}</b> {side} ОТКРЫТА!\n\n"
+                f"💰 <code>{qty:.6f}</code> @ <code>${price:,.4f}</code>\n"
+                f"📊 Размер: <b>{self.SCALP_POSITION_SIZE} USDT</b>\n"
+                f"🛡️ <b>SL:</b> -{self.SCALP_STOP_LOSS*100:.1f}%\n"
+                f"🎯 <b>TP:</b> +{self.SCALP_PROFIT_TARGET*100:.1f}%\n"
+                f"⏰ <code>{datetime.now().strftime('%H:%M:%S')}</code>"
+            )
+            await self.send_telegram_message(message, parse_mode="HTML")
+
+            logger.info(f"✅ ПОЗИЦИЯ С РИСКАМИ ОТКРЫТА: {symbol}")
+            return order_id
+
+        except Exception as e:
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА {symbol}: {e}")
+            await self.send_telegram_message(f"💥 ОШИБКА ОТКРЫТИЯ {symbol}: {e}")
             return None
+
+    async def _close_scalp_position(self, symbol: str, close_reason: str = "Manual") -> bool:
+        """Закрытие скальп позиции с отменой риск-ордеров"""
+        try:
+            if symbol not in self.active_scalp_positions:
+                logger.info(f"ℹ️ {symbol}: Позиция не найдена")
+                await self._cancel_risk_orders(symbol)
+                return True
+
+            logger.info(f"🔒 ЗАКРЫТИЕ ПОЗИЦИИ: {symbol} | Причина: {close_reason}")
+
+            await self._cancel_risk_orders(symbol)
+
+            position = self.active_scalp_positions[symbol]
+            side = position["side"]
+            qty = position["qty"]
+            close_side = "Sell" if side == "Buy" else "Buy"
+
+            close_params = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": close_side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "reduceOnly": True
+            }
+
+            logger.info(f"🔄 РАЗМЕЩАЕМ ОРДЕР ЗАКРЫТИЯ: {symbol} {close_side} | {qty:.6f}")
+            close_response = self.session.place_order(**close_params)
+
+            if close_response.get("retCode") == 0:
+                entry_price = position["entry_price"]
+                exit_price = self.get_current_price(symbol)
+
+                if exit_price and entry_price:
+                    if side == "Buy":
+                        pnl_percent = (exit_price - entry_price) / entry_price * 100
+                    else:
+                        pnl_percent = (entry_price - exit_price) / entry_price * 100
+
+                    pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
+                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
+
+                    status_emoji = "🟢 ПРИБЫЛЬ" if pnl_usd > 0 else "🔴 УБЫТОК"
+                    profit_color = "🟢" if pnl_usd > 0 else "🔴"
+
+                    message = (
+                        f"🔒 <b>{symbol}</b> {position['side']} ЗАКРЫТА\n\n"
+                        f"⏱️ <b>Длительность:</b> {duration:.1f} мин\n"
+                        f"{profit_color} <b>P&L:</b> {pnl_usd:+.3f} USDT\n"
+                        f"📊 <b>{pnl_percent:+.2f}%</b>\n"
+                        f"📝 <i>{close_reason}</i>\n"
+                        f"{status_emoji}"
+                    )
+                    await self.send_telegram_message(message, parse_mode="HTML")
+
+                    logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
+                else:
+                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
+                    message = f"🔒 <b>{symbol}</b> закрыта | ⏱️ {duration:.1f} мин | {close_reason}"
+                    await self.send_telegram_message(message, parse_mode="HTML")
+                    logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
+
+                del self.active_scalp_positions[symbol]
+                return True
+            else:
+                logger.error(f"❌ ОШИБКА ЗАКРЫТИЯ {symbol}: {close_response.get('retMsg')} (#{close_response.get('retCode')})")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ ИСКЛЮЧЕНИЕ ЗАКРЫТИЯ {symbol}: {e}")
+            return False
+
+    async def _manage_scalp_position(self, symbol: str):
+        """Управление скальп позицией (Trailing Stop и проверка статуса)"""
+        if symbol not in self.active_scalp_positions:
+            return
+
+        try:
+            position = self.active_scalp_positions[symbol]
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                return
+
+            entry_price = position["entry_price"]
+            side = position["side"]
+            open_time = position["open_time"]
+            duration = (datetime.now() - open_time).total_seconds() / 60
+
+            logger.info(f"⏰ Проверка позиции {symbol}: Открыта {open_time.strftime('%Y-%m-%d %H:%M:%S')} | Длительность: {duration:.1f}м")
+
+            position_response = self.session.get_positions(category="linear", symbol=symbol)
+            if position_response.get("retCode") == 0:
+                position_list = position_response["result"]["list"]
+                position_exists = any(
+                    pos["symbol"] == symbol and pos["side"] == side and float(pos["size"]) > 0
+                    for pos in position_list
+                )
+                if not position_exists:
+                    logger.info(f"🔍 ПОЗИЦИЯ {symbol} ЗАКРЫТА НА БИРЖЕ")
+                    await self._close_scalp_position(symbol, "Closed on Exchange")
+                    return
+
+            if duration > self.SCALP_TIMEOUT_MINUTES:
+                logger.info(f"⏰ ТАЙМАУТ {symbol}: {duration:.1f}м > {self.SCALP_TIMEOUT_MINUTES}м")
+                await self._close_scalp_position(symbol, "Timeout")
+                return
+
+            if side == "Buy":
+                position["high_watermark"] = max(position["high_watermark"], current_price)
+            else:
+                position["low_watermark"] = min(position["low_watermark"], current_price)
+
+            should_close = False
+            close_reason = ""
+
+            if side == "Buy":
+                if position["high_watermark"] > entry_price * (1 + self.SCALP_PROFIT_TARGET):
+                    trail_stop = position["high_watermark"] * (1 - self.SCALP_TRAILING_STOP)
+                    if current_price <= trail_stop:
+                        should_close = True
+                        close_reason = f"Trailing Stop {self.SCALP_TRAILING_STOP*100:.1f}%"
+            else:
+                if position["low_watermark"] < entry_price * (1 - self.SCALP_PROFIT_TARGET):
+                    trail_stop = position["low_watermark"] * (1 + self.SCALP_TRAILING_STOP)
+                    if current_price >= trail_stop:
+                        should_close = True
+                        close_reason = f"Trailing Stop {self.SCALP_TRAILING_STOP*100:.1f}%"
+
+            if should_close:
+                logger.info(f"🎯 TRAILING STOP {symbol}: {close_reason}")
+                await self._close_scalp_position(symbol, close_reason)
+
+        except Exception as e:
+            logger.error(f"❌ ОШИБКА УПРАВЛЕНИЯ {symbol}: {e}")
+
+    async def check_scalp_signals(self):
+        """Проверка скальп сигналов"""
+        if not self.running or self.BOT_MODE != "scalping":
+            return
+
+        current_time = time.time()
+        if current_time - self.last_scalp_check < self.SCALP_CHECK_INTERVAL:
+            return
+
+        self.signal_checks += 1
+        self.last_scalp_check = current_time
+
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        active_count = len(self.active_scalp_positions)
+
+        logger.info(f"🔍 === ПРОВЕРКА #{self.signal_checks} | {timestamp} | Активных: {active_count} ===")
+
+        available = self.get_available_balance(self.STABLE)
+        balance_str = f"{available:.2f}" if available is not None else "N/A"
+        logger.info(f"💰 БАЛАНС: {balance_str} USDT")
+
+        if available is None or available < self.SCALP_POSITION_SIZE:
+            logger.warning(f"⚠️ БАЛАНС НИЗКИЙ: {balance_str}")
+            return
+
+        if active_count >= self.SCALP_MAX_POSITIONS:
+            logger.info(f"⚠️ ЛИМИТ ПОЗИЦИЙ: {active_count}/{self.SCALP_MAX_POSITIONS}")
+            for symbol in list(self.active_scalp_positions.keys()):
+                await self._manage_scalp_position(symbol)
+            return
+
+        for symbol in list(self.active_scalp_positions.keys()):
+            await self._manage_scalp_position(symbol)
+
+        logger.info(f"📊 АНАЛИЗ ПАР: {', '.join(self.SCALP_SYMBOLS)}")
+        signals_found = 0
+
+        for i, symbol in enumerate(self.SCALP_SYMBOLS, 1):
+            symbol_positions = sum(1 for pos_symbol in self.active_scalp_positions if pos_symbol == symbol)
+            if symbol_positions >= self.MAX_POSITIONS_PER_SYMBOL:
+                logger.info(f"  {i}. {symbol} - Лимит для пары: {symbol_positions}/{self.MAX_POSITIONS_PER_SYMBOL}")
+                continue
+
+            logger.info(f"  {i}. 📊 {symbol} - Анализ...")
+
+            if not self.is_symbol_valid(symbol, "linear"):
+                logger.info(f"  ❌ {symbol} - Недоступен")
+                continue
+
+            rsi = self.get_rsi(symbol)
+            if rsi is None:
+                logger.info(f"  ⏭️ {symbol} - Нет RSI")
+                continue
+
+            price = self.get_current_price(symbol)
+            if not price:
+                logger.info(f"  ⏭️ {symbol} - Нет цены")
+                continue
+
+            volume_info = self.get_volume_info(symbol)
+            volume_mult = volume_info["multiplier"] if volume_info else 0
+
+            logger.info(f"  📈 {symbol} | RSI: {rsi:.1f} | Vol: {volume_mult:.1f}x | ${price:,.4f}")
+
+            signal = None
+            signal_strength = 0
+
+            if rsi < self.SCALP_RSI_OVERSOLD:
+                signal = "Buy"
+                signal_strength = (self.SCALP_RSI_OVERSOLD - rsi) / 10
+                signals_found += 1
+                logger.info(f"  🟢 СИГНАЛ {signal} | RSI: {rsi:.1f} | Сила: {signal_strength:.2f}")
+
+                if signal_strength >= 0.5 and volume_mult >= self.SCALP_VOLUME_MULTIPLIER:
+                    logger.info(f"  🎯 СИЛЬНЫЙ СИГНАЛ! Открываем {symbol}")
+                    qty = self.calculate_scalp_qty(symbol, self.SCALP_POSITION_SIZE)
+                    if qty:
+                        order_id = await self.place_scalp_order(symbol, signal, qty, price)
+                        if order_id:
+                            await asyncio.sleep(5)
+                            return
+                    else:
+                        logger.warning(f"  ⚠️ {symbol} - Ошибка расчета qty")
+                else:
+                    reason = "слабый сигнал" if signal_strength < 0.5 else "низкий объем"
+                    logger.info(f"  ⏳ {symbol} - {reason} (сила: {signal_strength:.2f}, vol: {volume_mult:.1f}x)")
+
+            elif rsi > self.SCALP_RSI_OVERBOUGHT:
+                signal = "Sell"
+                signal_strength = (rsi - self.SCALP_RSI_OVERBOUGHT) / 10
+                signals_found += 1
+                logger.info(f"  🔴 СИГНАЛ {signal} | RSI: {rsi:.1f} | Сила: {signal_strength:.2f}")
+
+                if signal_strength >= 0.5 and volume_mult >= self.SCALP_VOLUME_MULTIPLIER:
+                    logger.info(f"  🎯 СИЛЬНЫЙ СИГНАЛ! Открываем {symbol}")
+                    qty = self.calculate_scalp_qty(symbol, self.SCALP_POSITION_SIZE)
+                    if qty:
+                        order_id = await self.place_scalp_order(symbol, signal, qty, price)
+                        if order_id:
+                            await asyncio.sleep(5)
+                            return
+                else:
+                    reason = "слабый сигнал" if signal_strength < 0.5 else "низкий объем"
+                    logger.info(f"  ⏳ {symbol} - {reason} (сила: {signal_strength:.2f}, vol: {volume_mult:.1f}x)")
+
+            else:
+                logger.info(f"  ➡️ {symbol} - Норма (RSI {rsi:.1f})")
+
+        success_rate = (self.successful_signals / max(self.signal_checks, 1) * 100)
+        logger.info(f"📋 === ИТОГО #{self.signal_checks} ===")
+        logger.info(f"🎯 Сигналов: {signals_found} | Сделок: {self.successful_signals} | Успешность: {success_rate:.1f}%")
+        logger.info(f"🔒 Позиций: {len(self.active_scalp_positions)} | SL ордеров: {len(self.stop_loss_orders)}")
+        logger.info(f"⏰ Следующая проверка: +{self.SCALP_CHECK_INTERVAL}с")
+        logger.info("=" * 60)
 
     async def _signal_handler(self, signum, frame):
         logger.info(f"🛑 СИГНАЛ {signum}")
@@ -846,10 +852,8 @@ class BybitFundingBot:
 
     async def _cleanup(self):
         logger.info("🔄 ОЧИСТКА...")
-        # Отмена всех риск-ордеров
         for symbol in list(self.stop_loss_orders.keys()):
             await self._cancel_risk_orders(symbol)
-        # Закрытие позиций
         for symbol in list(self.active_scalp_positions.keys()):
             await self._close_scalp_position(symbol, "Shutdown")
         logger.info("✅ ОЧИСТКА ЗАВЕРШЕНА")
@@ -888,7 +892,7 @@ class BybitFundingBot:
                 consecutive_errors += 1
                 logger.error(f"💥 ОШИБКА #{consecutive_errors}: {e}")
                 if consecutive_errors >= 3:
-                    await self.send_telegram_message(f"💥 ОШИБКА: {e}")
+                    await self.send_telegram_message(f"💥 ОШИБКА ЦИКЛА: {e}")
                 await asyncio.sleep(30)
 
     async def run(self):
