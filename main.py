@@ -41,7 +41,7 @@ class BybitFundingBot:
         logger.info("🔧 === ИНИЦИАЛИЗАЦИЯ BybitFundingBot ===")
 
         # Конфигурация - Funding Arbitrage
-        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "SOLUSDT"]
+        self.SYMBOLS = ["ETHUSDT", "BNBUSDT", "BTCUSDT", "SOLUSDT"]
         self.STABLE = "USDT"
         self.POSITION_SIZE = 5.0
         self.CHECK_INTERVAL = 1800
@@ -52,12 +52,12 @@ class BybitFundingBot:
         self.CLOSE_NEGATIVE_RATE = True
 
         # Конфигурация - Scalping с STOP LOSS
-        self.SCALP_SYMBOLS = ["ETHUSDT", "BNBEUSDT", "BTCUSDT", "SOLUSDT"]
+        self.SCALP_SYMBOLS = ["ETHUSDT", "BNBUSDT", "BTCUSDT", "SOLUSDT"]
         self.SCALP_POSITION_SIZE = 5.0
         self.SCALP_CHECK_INTERVAL = 30
-        self.SCALP_PROFIT_TARGET = 0.003  # 0.3% тейк-профит
-        self.SCALP_STOP_LOSS = 0.01      # 1% стоп-лосс
-        self.SCALP_TRAILING_STOP = 0.001 # 0.1% trailing stop
+        self.SCALP_PROFIT_TARGET = 0.01
+        self.SCALP_STOP_LOSS = 0.01
+        self.SCALP_TRAILING_STOP = 0.001
         self.SCALP_RSI_PERIOD = 14
         self.SCALP_RSI_OVERSOLD = 30
         self.SCALP_RSI_OVERBOUGHT = 70
@@ -402,22 +402,21 @@ class BybitFundingBot:
                 take_profit_price = entry_price * (1 + self.SCALP_PROFIT_TARGET)
                 stop_side = "Sell"
                 tp_side = "Sell"
-                stop_trigger_direction = 2  # Цена падает до/ниже
-                tp_trigger_direction = 1    # Цена растет до/выше
+                stop_trigger_direction = 2
+                tp_trigger_direction = 1
             else:
                 stop_price = entry_price * (1 + self.SCALP_STOP_LOSS)
                 take_profit_price = entry_price * (1 - self.SCALP_PROFIT_TARGET)
                 stop_side = "Buy"
                 tp_side = "Buy"
-                stop_trigger_direction = 1  # Цена растет до/выше
-                tp_trigger_direction = 2    # Цена падает до/ниже
+                stop_trigger_direction = 1
+                tp_trigger_direction = 2
 
             stop_price = round(stop_price, price_precision)
             take_profit_price = round(take_profit_price, price_precision)
 
             logger.info(f"📊 {symbol} | Вход: ${entry_price:,.4f} | SL: ${stop_price:,.4f} | TP: ${take_profit_price:,.4f}")
 
-            # STOP LOSS ORDER
             stop_params = {
                 "category": "linear",
                 "symbol": symbol,
@@ -441,7 +440,6 @@ class BybitFundingBot:
                 logger.error(f"❌ STOP LOSS ОШИБКА {symbol}: {stop_response.get('retMsg')} (#{stop_response.get('retCode')})")
                 return False
 
-            # TAKE PROFIT ORDER
             tp_params = {
                 "category": "linear",
                 "symbol": symbol,
@@ -484,6 +482,7 @@ class BybitFundingBot:
 
     async def _cancel_risk_orders(self, symbol: str):
         """Отмена Stop Loss и Take Profit ордеров"""
+        logger.info(f"🗑️ ПРОВЕРКА ОТМЕНЫ ОРДЕРОВ: {symbol}")
         try:
             if symbol in self.stop_loss_orders:
                 stop_id = self.stop_loss_orders[symbol]
@@ -500,6 +499,8 @@ class BybitFundingBot:
                 except Exception as e:
                     logger.warning(f"⚠️ ИСКЛЮЧЕНИЕ ОТМЕНЫ SL {symbol}: {e}")
                 del self.stop_loss_orders[symbol]
+            else:
+                logger.info(f"ℹ️ STOP LOSS НЕ НАЙДЕН: {symbol}")
 
             if symbol in self.take_profit_orders:
                 tp_id = self.take_profit_orders[symbol]
@@ -516,6 +517,8 @@ class BybitFundingBot:
                 except Exception as e:
                     logger.warning(f"⚠️ ИСКЛЮЧЕНИЕ ОТМЕНЫ TP {symbol}: {e}")
                 del self.take_profit_orders[symbol]
+            else:
+                logger.info(f"ℹ️ TAKE PROFIT НЕ НАЙДЕН: {symbol}")
 
         except Exception as e:
             logger.error(f"❌ ОШИБКА ОТМЕНЫ ОРДЕРОВ {symbol}: {e}")
@@ -565,17 +568,20 @@ class BybitFundingBot:
                     logger.error(f"❌ ОШИБКА ОТКАТА {symbol}: {e}")
                 return None
 
+            open_time = datetime.now()
             self.active_scalp_positions[symbol] = {
                 "order_id": order_id,
                 "side": side,
                 "qty": qty,
                 "entry_price": price,
-                "open_time": datetime.now(),
+                "open_time": open_time,
                 "high_watermark": price,
                 "low_watermark": price,
                 "rsi_at_open": self.get_rsi(symbol),
                 "stop_loss_set": True
             }
+
+            logger.info(f"🕒 УСТАНОВЛЕНО OPEN_TIME: {symbol} | {open_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
             message = (
                 f"⚡ <b>{symbol}</b> {side} ОТКРЫТА!\n\n"
@@ -583,7 +589,7 @@ class BybitFundingBot:
                 f"📊 Размер: <b>{self.SCALP_POSITION_SIZE} USDT</b>\n"
                 f"🛡️ <b>SL:</b> -{self.SCALP_STOP_LOSS*100:.1f}%\n"
                 f"🎯 <b>TP:</b> +{self.SCALP_PROFIT_TARGET*100:.1f}%\n"
-                f"⏰ <code>{datetime.now().strftime('%H:%M:%S')}</code>"
+                f"⏰ <code>{open_time.strftime('%H:%M:%S')}</code>"
             )
             await self.send_telegram_message(message, parse_mode="HTML")
 
@@ -605,13 +611,58 @@ class BybitFundingBot:
 
             logger.info(f"🔒 ЗАКРЫТИЕ ПОЗИЦИИ: {symbol} | Причина: {close_reason}")
 
-            await self._cancel_risk_orders(symbol)
-
             position = self.active_scalp_positions[symbol]
             side = position["side"]
             qty = position["qty"]
-            close_side = "Sell" if side == "Buy" else "Buy"
+            entry_price = position["entry_price"]
+            open_time = position["open_time"]
 
+            # Проверка, существует ли позиция на бирже
+            position_response = self.session.get_positions(category="linear", symbol=symbol)
+            position_exists = False
+            if position_response.get("retCode") == 0:
+                position_list = position_response["result"]["list"]
+                position_exists = any(
+                    pos["symbol"] == symbol and pos["side"] == side and float(pos["size"]) > 0
+                    for pos in position_list
+                )
+
+            # Отмена SL/TP ордеров
+            await self._cancel_risk_orders(symbol)
+
+            if not position_exists:
+                logger.info(f"ℹ️ {symbol}: Позиция уже закрыта на бирже")
+                duration = (datetime.now() - open_time).total_seconds() / 60
+                exit_price = self.get_current_price(symbol)
+
+                if exit_price and entry_price:
+                    if side == "Buy":
+                        pnl_percent = (exit_price - entry_price) / entry_price * 100
+                    else:
+                        pnl_percent = (entry_price - exit_price) / entry_price * 100
+
+                    pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
+                    status_emoji = "🟢 ПРИБЫЛЬ" if pnl_usd > 0 else "🔴 УБЫТОК"
+                    profit_color = "🟢" if pnl_usd > 0 else "🔴"
+
+                    message = (
+                        f"🔒 <b>{symbol}</b> {side} ЗАКРЫТА\n\n"
+                        f"⏱️ <b>Длительность:</b> {duration:.1f} мин\n"
+                        f"{profit_color} <b>P&L:</b> {pnl_usd:+.3f} USDT\n"
+                        f"📊 <b>{pnl_percent:+.2f}%</b>\n"
+                        f"📝 <i>{close_reason}</i>\n"
+                        f"{status_emoji}"
+                    )
+                else:
+                    message = f"🔒 <b>{symbol}</b> закрыта | ⏱️ {duration:.1f} мин | {close_reason}"
+
+                await self.send_telegram_message(message, parse_mode="HTML")
+                logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
+                del self.active_scalp_positions[symbol]
+                return True
+
+            # Закрытие позиции, если она всё ещё открыта
+            close_side = "Sell" if side == "Buy" else "Buy"
             close_params = {
                 "category": "linear",
                 "symbol": symbol,
@@ -625,8 +676,8 @@ class BybitFundingBot:
             close_response = self.session.place_order(**close_params)
 
             if close_response.get("retCode") == 0:
-                entry_price = position["entry_price"]
                 exit_price = self.get_current_price(symbol)
+                duration = (datetime.now() - open_time).total_seconds() / 60
 
                 if exit_price and entry_price:
                     if side == "Buy":
@@ -635,28 +686,22 @@ class BybitFundingBot:
                         pnl_percent = (entry_price - exit_price) / entry_price * 100
 
                     pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
-                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
-
                     status_emoji = "🟢 ПРИБЫЛЬ" if pnl_usd > 0 else "🔴 УБЫТОК"
                     profit_color = "🟢" if pnl_usd > 0 else "🔴"
 
                     message = (
-                        f"🔒 <b>{symbol}</b> {position['side']} ЗАКРЫТА\n\n"
+                        f"🔒 <b>{symbol}</b> {side} ЗАКРЫТА\n\n"
                         f"⏱️ <b>Длительность:</b> {duration:.1f} мин\n"
                         f"{profit_color} <b>P&L:</b> {pnl_usd:+.3f} USDT\n"
                         f"📊 <b>{pnl_percent:+.2f}%</b>\n"
                         f"📝 <i>{close_reason}</i>\n"
                         f"{status_emoji}"
                     )
-                    await self.send_telegram_message(message, parse_mode="HTML")
-
-                    logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
                 else:
-                    duration = (datetime.now() - position["open_time"]).total_seconds() / 60
                     message = f"🔒 <b>{symbol}</b> закрыта | ⏱️ {duration:.1f} мин | {close_reason}"
-                    await self.send_telegram_message(message, parse_mode="HTML")
-                    logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
 
+                await self.send_telegram_message(message, parse_mode="HTML")
+                logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
                 del self.active_scalp_positions[symbol]
                 return True
             else:
@@ -676,6 +721,7 @@ class BybitFundingBot:
             position = self.active_scalp_positions[symbol]
             current_price = self.get_current_price(symbol)
             if not current_price:
+                logger.warning(f"⚠️ {symbol}: Не удалось получить текущую цену")
                 return
 
             entry_price = position["entry_price"]
@@ -845,6 +891,28 @@ class BybitFundingBot:
         logger.info(f"⏰ Следующая проверка: +{self.SCALP_CHECK_INTERVAL}с")
         logger.info("=" * 60)
 
+    async def _sync_positions(self):
+        """Синхронизация active_scalp_positions с биржей при старте"""
+        logger.info("🔄 СИНХРОНИЗАЦИЯ ПОЗИЦИЙ...")
+        try:
+            for symbol in self.SCALP_SYMBOLS:
+                position_response = self.session.get_positions(category="linear", symbol=symbol)
+                if position_response.get("retCode") != 0:
+                    logger.warning(f"⚠️ Ошибка проверки позиций {symbol}: {position_response.get('retMsg')}")
+                    continue
+
+                position_list = position_response["result"]["list"]
+                position_exists = any(float(pos["size"]) > 0 for pos in position_list)
+
+                if not position_exists and symbol in self.active_scalp_positions:
+                    logger.info(f"🗑️ УДАЛЕНИЕ УСТАРЕВШЕЙ ПОЗИЦИИ: {symbol}")
+                    await self._close_scalp_position(symbol, "Sync: Closed on Exchange")
+                elif position_exists and symbol not in self.active_scalp_positions:
+                    logger.warning(f"⚠️ Обнаружена позиция на бирже {symbol}, но не в active_scalp_positions")
+                    # Можно добавить логику для добавления позиции в active_scalp_positions
+        except Exception as e:
+            logger.error(f"❌ ОШИБКА СИНХРОНИЗАЦИИ: {e}")
+
     async def _signal_handler(self, signum, frame):
         logger.info(f"🛑 СИГНАЛ {signum}")
         self.running = False
@@ -900,6 +968,9 @@ class BybitFundingBot:
 
         try:
             logger.info(f"🚀 === {mode_name} BOT v2.5 ===")
+
+            # Синхронизация позиций при старте
+            await self._sync_positions()
 
             available = self.get_available_balance(self.STABLE)
             balance_display = f"{available:.2f}" if available is not None else "N/A"
