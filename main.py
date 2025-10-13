@@ -41,7 +41,7 @@ class BybitFundingBot:
         logger.info("🔧 === ИНИЦИАЛИЗАЦИЯ BybitFundingBot ===")
 
         # Конфигурация - Funding Arbitrage
-        self.SYMBOLS = ["ETHUSDT", "BNBUSDT", "BTCUSDT", "SOLUSDT"]
+        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "SOLUSDT", "BNBUSDT"]
         self.STABLE = "USDT"
         self.POSITION_SIZE = 5.0
         self.CHECK_INTERVAL = 1800
@@ -52,12 +52,12 @@ class BybitFundingBot:
         self.CLOSE_NEGATIVE_RATE = True
 
         # Конфигурация - Scalping с STOP LOSS
-        self.SCALP_SYMBOLS = ["ETHUSDT", "BNBUSDT", "BTCUSDT", "SOLUSDT"]
+        self.SCALP_SYMBOLS = ["ETHUSDT", "SOLUSDT", "BNBUSDT"]
         self.SCALP_POSITION_SIZE = 5.0
         self.SCALP_CHECK_INTERVAL = 30
-        self.SCALP_PROFIT_TARGET = 0.01
-        self.SCALP_STOP_LOSS = 0.01
-        self.SCALP_TRAILING_STOP = 0.001
+        self.SCALP_PROFIT_TARGET = 0.01  # 0.3%
+        self.SCALP_STOP_LOSS = 0.01      # 1%
+        self.SCALP_TRAILING_STOP = 0.001 # 0.1%
         self.SCALP_RSI_PERIOD = 14
         self.SCALP_RSI_OVERSOLD = 30
         self.SCALP_RSI_OVERBOUGHT = 70
@@ -569,11 +569,13 @@ class BybitFundingBot:
                 return None
 
             open_time = datetime.now()
+            entry_value = qty * price
             self.active_scalp_positions[symbol] = {
                 "order_id": order_id,
                 "side": side,
                 "qty": qty,
                 "entry_price": price,
+                "entry_value": entry_value,
                 "open_time": open_time,
                 "high_watermark": price,
                 "low_watermark": price,
@@ -581,12 +583,12 @@ class BybitFundingBot:
                 "stop_loss_set": True
             }
 
-            logger.info(f"🕒 УСТАНОВЛЕНО OPEN_TIME: {symbol} | {open_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"🕒 УСТАНОВЛЕНО OPEN_TIME: {symbol} | {open_time.strftime('%Y-%m-%d %H:%M:%S')} | Entry Value: ${entry_value:.2f}")
 
             message = (
                 f"⚡ <b>{symbol}</b> {side} ОТКРЫТА!\n\n"
                 f"💰 <code>{qty:.6f}</code> @ <code>${price:,.4f}</code>\n"
-                f"📊 Размер: <b>{self.SCALP_POSITION_SIZE} USDT</b>\n"
+                f"📊 Размер: <b>{entry_value:.2f} USDT</b>\n"
                 f"🛡️ <b>SL:</b> -{self.SCALP_STOP_LOSS*100:.1f}%\n"
                 f"🎯 <b>TP:</b> +{self.SCALP_PROFIT_TARGET*100:.1f}%\n"
                 f"⏰ <code>{open_time.strftime('%H:%M:%S')}</code>"
@@ -615,9 +617,10 @@ class BybitFundingBot:
             side = position["side"]
             qty = position["qty"]
             entry_price = position["entry_price"]
+            entry_value = position.get("entry_value", qty * entry_price)
             open_time = position["open_time"]
 
-            # Проверка, существует ли позиция на бирже
+            # Проверка существования позиции на бирже
             position_response = self.session.get_positions(category="linear", symbol=symbol)
             position_exists = False
             if position_response.get("retCode") == 0:
@@ -630,18 +633,16 @@ class BybitFundingBot:
             # Отмена SL/TP ордеров
             await self._cancel_risk_orders(symbol)
 
+            # Если позиция закрыта на бирже
             if not position_exists:
                 logger.info(f"ℹ️ {symbol}: Позиция уже закрыта на бирже")
-                duration = (datetime.now() - open_time).total_seconds() / 60
                 exit_price = self.get_current_price(symbol)
+                duration = (datetime.now() - open_time).total_seconds() / 60
 
-                if exit_price and entry_price:
-                    if side == "Buy":
-                        pnl_percent = (exit_price - entry_price) / entry_price * 100
-                    else:
-                        pnl_percent = (entry_price - exit_price) / entry_price * 100
-
-                    pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
+                if exit_price:
+                    exit_value = qty * exit_price
+                    pnl_usd = exit_value - entry_value if side == "Buy" else entry_value - exit_value
+                    pnl_percent = (pnl_usd / entry_value) * 100 if entry_value > 0 else 0
                     status_emoji = "🟢 ПРИБЫЛЬ" if pnl_usd > 0 else "🔴 УБЫТОК"
                     profit_color = "🟢" if pnl_usd > 0 else "🔴"
 
@@ -653,15 +654,16 @@ class BybitFundingBot:
                         f"📝 <i>{close_reason}</i>\n"
                         f"{status_emoji}"
                     )
+                    logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
                 else:
                     message = f"🔒 <b>{symbol}</b> закрыта | ⏱️ {duration:.1f} мин | {close_reason}"
+                    logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
 
                 await self.send_telegram_message(message, parse_mode="HTML")
-                logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
                 del self.active_scalp_positions[symbol]
                 return True
 
-            # Закрытие позиции, если она всё ещё открыта
+            # Закрытие позиции
             close_side = "Sell" if side == "Buy" else "Buy"
             close_params = {
                 "category": "linear",
@@ -676,16 +678,14 @@ class BybitFundingBot:
             close_response = self.session.place_order(**close_params)
 
             if close_response.get("retCode") == 0:
-                exit_price = self.get_current_price(symbol)
+                # Получаем реальную цену исполнения
+                exit_price = float(close_response["result"].get("avgPrice", self.get_current_price(symbol)))
                 duration = (datetime.now() - open_time).total_seconds() / 60
 
-                if exit_price and entry_price:
-                    if side == "Buy":
-                        pnl_percent = (exit_price - entry_price) / entry_price * 100
-                    else:
-                        pnl_percent = (entry_price - exit_price) / entry_price * 100
-
-                    pnl_usd = pnl_percent / 100 * self.SCALP_POSITION_SIZE
+                if exit_price:
+                    exit_value = qty * exit_price
+                    pnl_usd = exit_value - entry_value if side == "Buy" else entry_value - exit_value
+                    pnl_percent = (pnl_usd / entry_value) * 100 if entry_value > 0 else 0
                     status_emoji = "🟢 ПРИБЫЛЬ" if pnl_usd > 0 else "🔴 УБЫТОК"
                     profit_color = "🟢" if pnl_usd > 0 else "🔴"
 
@@ -697,11 +697,12 @@ class BybitFundingBot:
                         f"📝 <i>{close_reason}</i>\n"
                         f"{status_emoji}"
                     )
+                    logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
                 else:
                     message = f"🔒 <b>{symbol}</b> закрыта | ⏱️ {duration:.1f} мин | {close_reason}"
+                    logger.info(f"📊 {symbol} закрыта | {duration:.1f}м | {close_reason}")
 
                 await self.send_telegram_message(message, parse_mode="HTML")
-                logger.info(f"📊 {symbol} | {pnl_usd:+.3f} USDT ({pnl_percent:+.2f}%) | {duration:.1f}м | {close_reason}")
                 del self.active_scalp_positions[symbol]
                 return True
             else:
@@ -877,6 +878,8 @@ class BybitFundingBot:
                         if order_id:
                             await asyncio.sleep(5)
                             return
+                    else:
+                        logger.warning(f"  ⚠️ {symbol} - Ошибка расчета qty")
                 else:
                     reason = "слабый сигнал" if signal_strength < 0.5 else "низкий объем"
                     logger.info(f"  ⏳ {symbol} - {reason} (сила: {signal_strength:.2f}, vol: {volume_mult:.1f}x)")
@@ -909,7 +912,6 @@ class BybitFundingBot:
                     await self._close_scalp_position(symbol, "Sync: Closed on Exchange")
                 elif position_exists and symbol not in self.active_scalp_positions:
                     logger.warning(f"⚠️ Обнаружена позиция на бирже {symbol}, но не в active_scalp_positions")
-                    # Можно добавить логику для добавления позиции в active_scalp_positions
         except Exception as e:
             logger.error(f"❌ ОШИБКА СИНХРОНИЗАЦИИ: {e}")
 
@@ -967,7 +969,7 @@ class BybitFundingBot:
         mode_name = "Scalping" if self.BOT_MODE == "scalping" else "Funding"
 
         try:
-            logger.info(f"🚀 === {mode_name} BOT v2.5 ===")
+            logger.info(f"🚀 === {mode_name} BOT v2.6 ===")
 
             # Синхронизация позиций при старте
             await self._sync_positions()
@@ -976,7 +978,7 @@ class BybitFundingBot:
             balance_display = f"{available:.2f}" if available is not None else "N/A"
 
             startup_message = (
-                f"🤖 <b>Bybit {mode_name} Bot v2.5</b>\n\n"
+                f"🤖 <b>Bybit {mode_name} Bot v2.6</b>\n\n"
                 f"💰 Баланс: <code>{balance_display}</code>\n"
                 f"📈 Пары: <code>{', '.join(self.SCALP_SYMBOLS)}</code>\n"
                 f"⚡ Интервал: <b>{self.SCALP_CHECK_INTERVAL}с</b>\n"
