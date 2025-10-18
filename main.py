@@ -55,7 +55,7 @@ class BybitFundingBot:
         self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT", "SOLUSDT", "BNBUSDT", "OPUSDT", "APEUSDT", "WAVEUSDT", "XRPUSDT", "LINKUSDT"]
         self.SCALP_POSITION_SIZE = 5.0
         self.SCALP_CHECK_INTERVAL = 30
-        self.SCALP_PROFIT_TARGET = 0.003  # 0.3%
+        self.SCALP_PROFIT_TARGET = 0.015  # 0.15%
         self.SCALP_STOP_LOSS = 0.01      # 1%
         self.SCALP_TRAILING_STOP = 0.001 # 0.1%
         self.SCALP_RSI_PERIOD = 14
