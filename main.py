@@ -52,10 +52,10 @@ class BybitFundingBot:
         self.CLOSE_NEGATIVE_RATE = True
 
         # Конфигурация - Scalping с STOP LOSS
-        self.SCALP_SYMBOLS = ["ETHUSDT", "SOLUSDT", "BNBUSDT"]
+        self.SCALP_SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT", "SOLUSDT", "BNBUSDT", "OPUSDT", "APEUSDT", "WAVEUSDT", "XRPUSDT", "LINKUSDT"]
         self.SCALP_POSITION_SIZE = 5.0
         self.SCALP_CHECK_INTERVAL = 30
-        self.SCALP_PROFIT_TARGET = 0.01  # 0.3%
+        self.SCALP_PROFIT_TARGET = 0.003  # 0.3%
         self.SCALP_STOP_LOSS = 0.01      # 1%
         self.SCALP_TRAILING_STOP = 0.001 # 0.1%
         self.SCALP_RSI_PERIOD = 14
@@ -63,11 +63,13 @@ class BybitFundingBot:
         self.SCALP_RSI_OVERBOUGHT = 70
         self.SCALP_VOLUME_MULTIPLIER = 1.5
         self.SCALP_MAX_POSITIONS = 3
-        self.SCALP_TIMEOUT_MINUTES = 300
+        self.SCALP_TIMEOUT_MINUTES = 10
         self.MACD_FAST = 12
         self.MACD_SLOW = 26
         self.MACD_SIGNAL = 9
-        self.MACD_THRESHOLD = 0.0  # Минимальная разница между MACD и Signal Line для сигнала
+        self.MACD_THRESHOLD = 0.0
+        self.ATR_PERIOD = 14
+        self.ATR_THRESHOLD = 0.02  # 2% волатильность, порог для пропуска
 
         # Мониторинг
         self.SCALP_STATUS_INTERVAL = 300
@@ -81,6 +83,7 @@ class BybitFundingBot:
         logger.info(f"🔄 ИНТЕРВАЛ: {self.SCALP_CHECK_INTERVAL} сек")
         logger.info(f"🛡️ STOP LOSS: {self.SCALP_STOP_LOSS*100:.1f}% | Тейк: {self.SCALP_PROFIT_TARGET*100:.1f}%")
         logger.info(f"📊 MACD: Fast={self.MACD_FAST}, Slow={self.MACD_SLOW}, Signal={self.MACD_SIGNAL}")
+        logger.info(f"📊 ATR: Период={self.ATR_PERIOD}, Порог={self.ATR_THRESHOLD*100:.1f}%")
 
         # Telegram настройки
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -130,6 +133,7 @@ class BybitFundingBot:
         self.ohlcv_cache = {}
         self.rsi_cache = {}
         self.macd_cache = {}
+        self.atr_cache = {}
         self.symbol_info_cache = {}
         self.balance_cache = {}
         self.stop_loss_orders = {}
@@ -322,18 +326,16 @@ class BybitFundingBot:
             return None
 
     def calculate_ema(self, prices: List[float], period: int) -> List[float]:
-        """Рассчитать EMA (экспоненциальное скользящее среднее)"""
         if len(prices) < period:
             return []
         ema = []
         multiplier = 2 / (period + 1)
-        ema.append(sum(prices[:period]) / period)  # Начальная SMA
+        ema.append(sum(prices[:period]) / period)
         for price in prices[period:]:
             ema.append((price * multiplier) + (ema[-1] * (1 - multiplier)))
         return ema
 
     def calculate_macd(self, symbol: str, fast: int = 12, slow: int = 26, signal: int = 9) -> Optional[Dict]:
-        """Рассчитать MACD и Signal Line"""
         try:
             ohlcv = self.get_ohlcv(symbol, "1", max(fast, slow, signal) + 10)
             if not ohlcv or len(ohlcv) < max(fast, slow, signal) + 1:
@@ -359,6 +361,32 @@ class BybitFundingBot:
             }
         except Exception as e:
             logger.warning(f"⚠️ Ошибка расчета MACD для {symbol}: {e}")
+            return None
+
+    def calculate_atr(self, symbol: str, period: int = 14) -> Optional[float]:
+        """Рассчитать ATR для проверки волатильности"""
+        try:
+            ohlcv = self.get_ohlcv(symbol, "1", period + 1)
+            if not ohlcv or len(ohlcv) < period + 1:
+                return None
+
+            # Рассчитать True Range (TR)
+            tr_list = []
+            for i in range(1, len(ohlcv)):
+                high = ohlcv[i-1]["high"]
+                low = ohlcv[i-1]["low"]
+                close_prev = ohlcv[i]["close"]
+                tr = max(high - low, abs(high - close_prev), abs(low - close_prev))
+                tr_list.append(tr)
+
+            # ATR = EMA(TR, period)
+            atr_values = self.calculate_ema(tr_list, period)
+            if len(atr_values) < 1:
+                return None
+
+            return atr_values[-1]
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка расчета ATR для {symbol}: {e}")
             return None
 
     def calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
@@ -627,6 +655,7 @@ class BybitFundingBot:
                 "low_watermark": price,
                 "rsi_at_open": self.get_rsi(symbol),
                 "macd_at_open": self.calculate_macd(symbol),
+                "atr_at_open": self.calculate_atr(symbol),
                 "stop_loss_set": True
             }
 
@@ -667,7 +696,6 @@ class BybitFundingBot:
             entry_value = position.get("entry_value", qty * entry_price)
             open_time = position["open_time"]
 
-            # Проверка существования позиции на бирже
             position_response = self.session.get_positions(category="linear", symbol=symbol)
             position_exists = False
             if position_response.get("retCode") == 0:
@@ -677,10 +705,8 @@ class BybitFundingBot:
                     for pos in position_list
                 )
 
-            # Отмена SL/TP ордеров
             await self._cancel_risk_orders(symbol)
 
-            # Если позиция закрыта на бирже
             if not position_exists:
                 logger.info(f"ℹ️ {symbol}: Позиция уже закрыта на бирже")
                 exit_price = self.get_current_price(symbol)
@@ -710,7 +736,6 @@ class BybitFundingBot:
                 del self.active_scalp_positions[symbol]
                 return True
 
-            # Закрытие позиции
             close_side = "Sell" if side == "Buy" else "Buy"
             close_params = {
                 "category": "linear",
@@ -725,7 +750,6 @@ class BybitFundingBot:
             close_response = self.session.place_order(**close_params)
 
             if close_response.get("retCode") == 0:
-                # Получаем реальную цену исполнения
                 exit_price = float(close_response["result"].get("avgPrice", self.get_current_price(symbol)))
                 duration = (datetime.now() - open_time).total_seconds() / 60
 
@@ -825,7 +849,7 @@ class BybitFundingBot:
             logger.error(f"❌ ОШИБКА УПРАВЛЕНИЯ {symbol}: {e}")
 
     async def check_scalp_signals(self):
-        """Проверка скальп сигналов с RSI и MACD"""
+        """Проверка скальп сигналов с RSI, MACD и ATR"""
         if not self.running or self.BOT_MODE != "scalping":
             return
 
@@ -883,6 +907,11 @@ class BybitFundingBot:
                 logger.info(f"  ⏭️ {symbol} - Нет MACD")
                 continue
 
+            atr = self.calculate_atr(symbol, self.ATR_PERIOD)
+            if atr is None:
+                logger.info(f"  ⏭️ {symbol} - Нет ATR")
+                continue
+
             price = self.get_current_price(symbol)
             if not price:
                 logger.info(f"  ⏭️ {symbol} - Нет цены")
@@ -891,11 +920,17 @@ class BybitFundingBot:
             volume_info = self.get_volume_info(symbol)
             volume_mult = volume_info["multiplier"] if volume_info else 0
 
+            atr_percent = atr / price if price > 0 else 0
+
             macd = macd_data["macd"]
             signal_line = macd_data["signal"]
             histogram = macd_data["histogram"]
 
-            logger.info(f"  📈 {symbol} | RSI: {rsi:.1f} | MACD: {macd:.4f} | Signal: {signal_line:.4f} | Vol: {volume_mult:.1f}x | ${price:,.4f}")
+            logger.info(f"  📈 {symbol} | RSI: {rsi:.1f} | MACD: {macd:.4f} | Signal: {signal_line:.4f} | ATR: {atr_percent*100:.2f}% | Vol: {volume_mult:.1f}x | ${price:,.4f}")
+
+            if atr_percent > self.ATR_THRESHOLD:
+                logger.info(f"  ⏭️ {symbol} - Высокая волатильность ({atr_percent*100:.2f}% > {self.ATR_THRESHOLD*100:.2f}%)")
+                continue
 
             signal = None
             signal_strength = 0
@@ -1041,6 +1076,7 @@ class BybitFundingBot:
                 f"🛡️ <b>SL:</b> <code>{self.SCALP_STOP_LOSS*100:.1f}%</code>\n"
                 f"🎯 <b>TP:</b> <code>{self.SCALP_PROFIT_TARGET*100:.1f}%</code>\n"
                 f"📊 <b>MACD:</b> <code>{self.MACD_FAST}/{self.MACD_SLOW}/{self.MACD_SIGNAL}</code>\n"
+                f"📊 <b>ATR:</b> <code>Порог {self.ATR_THRESHOLD*100:.1f}%</code>\n"
                 f"🔒 <b>Макс. позиций:</b> {self.SCALP_MAX_POSITIONS}\n\n"
                 f"🚀 <b>ЗАПУЩЕН С STOP LOSS!</b>"
             )
@@ -1055,7 +1091,8 @@ class BybitFundingBot:
                     f"• Stop Loss: -{self.SCALP_STOP_LOSS*100:.1f}%\n"
                     f"• Take Profit: +{self.SCALP_PROFIT_TARGET*100:.1f}%\n"
                     f"• Trailing Stop: {self.SCALP_TRAILING_STOP*100:.1f}%\n"
-                    f"• MACD: {self.MACD_FAST}/{self.MACD_SLOW}/{self.MACD_SIGNAL}\n\n"
+                    f"• MACD: {self.MACD_FAST}/{self.MACD_SLOW}/{self.MACD_SIGNAL}\n"
+                    f"• ATR: порог {self.ATR_THRESHOLD*100:.1f}%\n\n"
                     f"🔍 <b>Поиск каждые {self.SCALP_CHECK_INTERVAL}с</b>\n"
                     f"📊 <b>Полная защита позиций</b>\n\n"
                     f"🎯 <b>ГОТОВ К БЕЗОПАСНОЙ ТОРГОВЛЕ!</b> 🛡️",
