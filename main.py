@@ -41,9 +41,9 @@ class BybitFundingBot:
         logger.info("🔧 === ИНИЦИАЛИЗАЦИЯ BybitFundingBot ===")
 
         # Конфигурация - Funding Arbitrage
-        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "SOLUSDT", "BNBUSDT"]
+        self.SYMBOLS = ["ETHUSDT", "DOGEUSDT", "BTCUSDT", "SOLUSDT", "BNBUSDT", "OPUSDT", "APEUSDT", "WAVEUSDT", "XRPUSDT", "LINKUSDT"]
         self.STABLE = "USDT"
-        self.POSITION_SIZE = 5.0
+        self.POSITION_SIZE = 6.0
         self.CHECK_INTERVAL = 1800
         self.FUNDING_RATE_THRESHOLD = 0.02
         self.MAX_POSITIONS_PER_SYMBOL = 1
@@ -76,7 +76,7 @@ class BybitFundingBot:
         self.TELEGRAM_STATUS_INTERVAL = 1800
 
         # Режим работы
-        self.BOT_MODE = "scalping"
+        self.BOT_MODE = "Funding"
 
         logger.info(f"⚙️  РЕЖИМ: {self.BOT_MODE.upper()}")
         logger.info(f"📈 СКАЛЬПИНГ ПАРЫ: {', '.join(self.SCALP_SYMBOLS)}")
